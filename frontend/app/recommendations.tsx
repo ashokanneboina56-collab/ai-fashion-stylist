@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import {
   View, Text, TouchableOpacity, StyleSheet, ScrollView,
-  ActivityIndicator, Linking, RefreshControl, FlatList,
+  ActivityIndicator, Linking, RefreshControl, FlatList, useWindowDimensions,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
@@ -40,6 +40,9 @@ function getStoreIcon(store: string): string {
 
 export default function RecommendationsScreen() {
   const router = useRouter();
+  const { width: SCREEN_WIDTH } = useWindowDimensions();
+  const numColumns = SCREEN_WIDTH > 768 ? 2 : 1;
+
   const [recommendations, setRecommendations] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -55,7 +58,7 @@ export default function RecommendationsScreen() {
       if (platformFilter !== 'All') params += `platform=${encodeURIComponent(platformFilter)}&`;
       if (categoryFilter !== 'All') params += `category=${encodeURIComponent(categoryFilter)}&`;
       const data = await apiCall(`/recommendations${params}`);
-      setRecommendations(data.recommendations || []);
+      setRecommendations(data || []);
     } catch (e) {
       console.error(e);
     } finally {
@@ -155,7 +158,7 @@ export default function RecommendationsScreen() {
             onPress={() => handleShopNow(item.search_url)}
             activeOpacity={0.8}
           >
-            <Text style={styles.shopBtnText}>Shop Now</Text>
+            <Text style={styles.shopBtnText}>View</Text>
             <Feather name="external-link" size={13} color="#fff" />
           </TouchableOpacity>
         </View>
@@ -229,10 +232,13 @@ export default function RecommendationsScreen() {
         </View>
       ) : (
         <FlatList
+          key={numColumns}
           data={recommendations}
+          numColumns={numColumns}
           keyExtractor={(item, index) => `rec-${index}`}
           renderItem={renderRecCard}
           contentContainerStyle={styles.list}
+          columnWrapperStyle={numColumns > 1 ? styles.columnWrapper : null}
           showsVerticalScrollIndicator={false}
           refreshControl={
             <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={Colors.secondary} />
@@ -317,10 +323,12 @@ const styles = StyleSheet.create({
   },
   emptyBtnText: { fontFamily: 'Lato_700Bold', fontSize: FontSizes.bodyLg, color: Colors.onPrimary },
   list: { padding: Spacing.screenPadding, paddingBottom: 40 },
+  columnWrapper: { justifyContent: 'space-between', gap: Spacing.md },
   recCard: {
     backgroundColor: Colors.surface, borderRadius: Radius.md,
     padding: Spacing.md, marginBottom: Spacing.md,
     borderWidth: 0.5, borderColor: Colors.border, ...Shadows.soft,
+    flex: 1, // Allow card to grow/shrink in grid
   },
   recHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start' },
   recTitleWrap: { flex: 1, marginRight: Spacing.sm },

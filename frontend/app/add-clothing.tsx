@@ -1,20 +1,26 @@
 import React, { useState } from 'react';
 import {
   View, Text, TouchableOpacity, StyleSheet, Image,
-  ActivityIndicator, Alert, ScrollView, Platform,
+  ActivityIndicator, Alert, ScrollView, Platform, useWindowDimensions, Dimensions,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { Feather, Ionicons } from '@expo/vector-icons';
-import * as ImagePicker from 'expo-image-picker';
+import * as ImagePicker from 'expo-image-picker'; // This might not be right, checking ImagePicker assets
 import Animated, { FadeIn, FadeInUp } from 'react-native-reanimated';
 import { apiCall } from '../utils/api';
 import { Colors, Spacing, FontSizes, Radius, Shadows } from '../constants/theme';
 
+const { width: SCREEN_WIDTH } = Dimensions.get('window');
+
 export default function AddClothingScreen() {
+  const isMobile = SCREEN_WIDTH < 480;
+
   const [image, setImage] = useState<string | null>(null);
+  const [batchImages, setBatchImages] = useState<string[]>([]);
   const [uploading, setUploading] = useState(false);
   const [result, setResult] = useState<any>(null);
+  const [isBatchMode, setIsBatchMode] = useState(false);
   const router = useRouter();
 
   const pickImage = async (useCamera: boolean) => {
@@ -33,14 +39,20 @@ export default function AddClothingScreen() {
 
     const res = await pickerFn({
       mediaTypes: ['images'],
-      allowsEditing: true,
+      allowsEditing: !isBatchMode, // Disable editing for multi-select
+      allowsMultipleSelection: isBatchMode,
       quality: 0.8,
       base64: true,
     });
 
-    if (!res.canceled && res.assets[0]?.base64) {
-      setImage(res.assets[0].base64);
-      setResult(null);
+    if (!res.canceled && res.assets) {
+      if (isBatchMode) {
+        const newImages = res.assets.map(a => a.base64).filter(Boolean) as string[];
+        setBatchImages(prev => [...prev, ...newImages]);
+      } else if (res.assets[0]?.base64) {
+        setImage(res.assets[0].base64);
+        setResult(null);
+      }
     }
   };
 
@@ -60,83 +72,157 @@ export default function AddClothingScreen() {
     }
   };
 
+  const uploadBatch = async () => {
+    if (batchImages.length === 0) return;
+    setUploading(true);
+    try {
+      const data = await apiCall('/wardrobe/batch-add', {
+        method: 'POST',
+        body: JSON.stringify({
+          items: batchImages.map(img => ({ image_base64: img }))
+        }),
+      });
+      Alert.alert('Success', `Successfully uploaded ${data.items?.length || 0} items`, [
+        { text: 'View Wardrobe', onPress: () => router.back() },
+        { text: 'OK', onPress: () => setBatchImages([]) }
+      ]);
+    } catch (e: any) {
+      Alert.alert('Error', e.message || 'Failed to process batch upload');
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  const removeBatchImage = (index: number) => {
+    setBatchImages(prev => prev.filter((_, i) => i !== index));
+  };
+
   return (
     <SafeAreaView style={styles.safe}>
       <View style={styles.headerRow}>
         <TouchableOpacity testID="close-add-clothing" onPress={() => router.back()} style={styles.closeBtn}>
           <Feather name="x" size={24} color={Colors.textPrimary} />
         </TouchableOpacity>
-        <Text style={styles.headerTitle}>Add Clothing</Text>
-        <View style={{ width: 44 }} />
+        <Text style={styles.headerTitle}>{isBatchMode ? 'Batch Upload' : 'Add Clothing'}</Text>
+        <TouchableOpacity onPress={() => {
+          setIsBatchMode(!isBatchMode);
+          setImage(null);
+          setBatchImages([]);
+          setResult(null);
+        }}>
+          <Text style={{ color: Colors.secondary, fontFamily: 'Lato_700Bold' }}>
+            {isBatchMode ? 'Single' : 'Batch'}
+          </Text>
+        </TouchableOpacity>
       </View>
 
       <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
-        {!image && !result && (
-          <Animated.View entering={FadeIn}>
-            <Text style={styles.subtitle}>Capture or select a clothing item</Text>
-            <View style={styles.optionsRow}>
-              <TouchableOpacity testID="take-photo-btn" style={styles.optionCard} onPress={() => pickImage(true)}>
-                <View style={styles.optionIconWrap}>
-                  <Feather name="camera" size={32} color={Colors.secondary} />
+        {!isBatchMode ? (
+          <>
+            {!image && !result && (
+              <Animated.View entering={FadeIn}>
+                <Text style={styles.subtitle}>Capture or select a clothing item</Text>
+                <View style={[styles.optionsRow, { flexDirection: isMobile ? 'column' : 'row' }]}>
+                  <TouchableOpacity testID="take-photo-btn" style={styles.optionCard} onPress={() => pickImage(true)}>
+                    <View style={styles.optionIconWrap}>
+                      <Feather name="camera" size={32} color={Colors.secondary} />
+                    </View>
+                    <Text style={styles.optionText}>Take Photo</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity testID="pick-gallery-btn" style={styles.optionCard} onPress={() => pickImage(false)}>
+                    <View style={styles.optionIconWrap}>
+                      <Feather name="image" size={32} color={Colors.secondary} />
+                    </View>
+                    <Text style={styles.optionText}>Gallery</Text>
+                  </TouchableOpacity>
                 </View>
-                <Text style={styles.optionText}>Take Photo</Text>
-              </TouchableOpacity>
-              <TouchableOpacity testID="pick-gallery-btn" style={styles.optionCard} onPress={() => pickImage(false)}>
-                <View style={styles.optionIconWrap}>
-                  <Feather name="image" size={32} color={Colors.secondary} />
-                </View>
-                <Text style={styles.optionText}>Gallery</Text>
-              </TouchableOpacity>
-            </View>
-          </Animated.View>
-        )}
-
-        {image && !result && (
-          <Animated.View entering={FadeInUp}>
-            <Image source={{ uri: `data:image/jpeg;base64,${image}` }} style={styles.preview} />
-            {uploading ? (
-              <View style={styles.processingCard}>
-                <ActivityIndicator size="large" color={Colors.secondary} />
-                <Text style={styles.processingText}>AI is analyzing your clothing...</Text>
-                <Text style={styles.processingSubtext}>Detecting category, color, texture & style</Text>
-              </View>
-            ) : (
-              <View style={styles.actionRow}>
-                <TouchableOpacity testID="retake-btn" style={styles.retakeBtn} onPress={() => { setImage(null); setResult(null); }}>
-                  <Feather name="refresh-cw" size={16} color={Colors.textPrimary} />
-                  <Text style={styles.retakeBtnText}>Retake</Text>
-                </TouchableOpacity>
-                <TouchableOpacity testID="upload-btn" style={styles.uploadBtn} onPress={uploadImage}>
-                  <Ionicons name="sparkles" size={16} color={Colors.onPrimary} />
-                  <Text style={styles.uploadBtnText}>Analyze & Save</Text>
-                </TouchableOpacity>
-              </View>
+              </Animated.View>
             )}
-          </Animated.View>
-        )}
 
-        {result && (
-          <Animated.View entering={FadeInUp}>
-            <Image source={{ uri: `data:image/jpeg;base64,${result.image_base64}` }} style={styles.preview} />
-            <View style={styles.resultCard}>
-              <Text style={styles.resultTitle}>{result.name}</Text>
-              <View style={styles.attrGrid}>
-                <AttrItem label="Category" value={result.category} icon="tag" />
-                <AttrItem label="Color" value={result.color} icon="droplet" />
-                <AttrItem label="Texture" value={result.texture} icon="layers" />
-                <AttrItem label="Style" value={result.style} icon="star" />
-              </View>
-              <View style={styles.resultActions}>
-                <TouchableOpacity testID="add-another-btn" style={styles.addAnotherBtn} onPress={() => { setImage(null); setResult(null); }}>
-                  <Feather name="plus" size={16} color={Colors.secondary} />
-                  <Text style={styles.addAnotherText}>Add Another</Text>
-                </TouchableOpacity>
-                <TouchableOpacity testID="go-wardrobe-btn" style={styles.goWardrobeBtn} onPress={() => router.back()}>
-                  <Text style={styles.goWardrobeText}>View Wardrobe</Text>
-                </TouchableOpacity>
-              </View>
+            {image && !result && (
+              <Animated.View entering={FadeInUp}>
+                <Image source={{ uri: `data:image/jpeg;base64,${image}` }} style={styles.preview} />
+                {uploading ? (
+                  <View style={styles.processingCard}>
+                    <ActivityIndicator size="large" color={Colors.secondary} />
+                    <Text style={styles.processingText}>AI is analyzing your clothing...</Text>
+                    <Text style={styles.processingSubtext}>Detecting category, color, texture & style</Text>
+                  </View>
+                ) : (
+                  <View style={[styles.actionRow, { flexDirection: isMobile ? 'column' : 'row' }]}>
+                    <TouchableOpacity testID="retake-btn" style={styles.retakeBtn} onPress={() => { setImage(null); setResult(null); }}>
+                      <Feather name="refresh-cw" size={16} color={Colors.textPrimary} />
+                      <Text style={styles.retakeBtnText}>Retake</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity testID="upload-btn" style={styles.uploadBtn} onPress={uploadImage}>
+                      <Ionicons name="sparkles" size={16} color={Colors.onPrimary} />
+                      <Text style={styles.uploadBtnText}>Analyze & Save</Text>
+                    </TouchableOpacity>
+                  </View>
+                )}
+              </Animated.View>
+            )}
+
+            {result && (
+              <Animated.View entering={FadeInUp}>
+                <Image source={{ uri: `data:image/jpeg;base64,${result?.image_base64}` }} style={styles.preview} />
+                <View style={styles.resultCard}>
+                  <Text style={styles.resultTitle}>{result?.name || 'Unnamed Item'}</Text>
+                  <View style={styles.attrGrid}>
+                    <AttrItem label="Category" value={result?.category || 'Tops'} icon="tag" />
+                    <AttrItem label="Color" value={result?.color || 'Unknown'} icon="droplet" />
+                    <AttrItem label="Style" value={result?.style || 'Casual'} icon="star" />
+                    <AttrItem label="Pattern" value={result?.pattern || 'plain'} icon="layers" />
+                  </View>
+                  <View style={[styles.resultActions, { flexDirection: isMobile ? 'column' : 'row' }]}>
+                    <TouchableOpacity testID="add-another-btn" style={styles.addAnotherBtn} onPress={() => { setImage(null); setResult(null); }}>
+                      <Feather name="plus" size={16} color={Colors.secondary} />
+                      <Text style={styles.addAnotherText}>Add Another</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity testID="go-wardrobe-btn" style={styles.goWardrobeBtn} onPress={() => router.back()}>
+                      <Text style={styles.goWardrobeText}>View Wardrobe</Text>
+                    </TouchableOpacity>
+                  </View>
+                </View>
+              </Animated.View>
+            )}
+          </>
+        ) : (
+          <View>
+            <Text style={styles.subtitle}>Select multiple items to upload</Text>
+            <TouchableOpacity style={styles.batchAddBtn} onPress={() => pickImage(false)}>
+              <Feather name="plus" size={24} color={Colors.onPrimary} />
+              <Text style={styles.batchAddBtnText}>Select Images</Text>
+            </TouchableOpacity>
+
+            <View style={styles.batchGrid}>
+              {batchImages.map((img, idx) => (
+                <View key={idx} style={styles.batchItem}>
+                  <Image source={{ uri: `data:image/jpeg;base64,${img}` }} style={styles.batchImage} />
+                  <TouchableOpacity style={styles.removeBatchBtn} onPress={() => removeBatchImage(idx)}>
+                    <Feather name="trash-2" size={14} color="#fff" />
+                  </TouchableOpacity>
+                </View>
+              ))}
             </View>
-          </Animated.View>
+
+            {batchImages.length > 0 && (
+              <TouchableOpacity 
+                style={[styles.uploadBtn, { width: '100%', marginTop: Spacing.lg }]} 
+                onPress={uploadBatch}
+                disabled={uploading}
+              >
+                {uploading ? (
+                  <ActivityIndicator color={Colors.onPrimary} />
+                ) : (
+                  <>
+                    <Ionicons name="cloud-upload-outline" size={20} color={Colors.onPrimary} />
+                    <Text style={styles.uploadBtnText}>Upload {batchImages.length} Items</Text>
+                  </>
+                )}
+              </TouchableOpacity>
+            )}
+          </View>
         )}
       </ScrollView>
     </SafeAreaView>
@@ -184,7 +270,7 @@ const styles = StyleSheet.create({
   },
   optionText: { fontFamily: 'Lato_700Bold', fontSize: FontSizes.bodyLg, color: Colors.textPrimary },
   preview: {
-    width: '100%', height: 350, borderRadius: Radius.md,
+    width: '100%', height: undefined, aspectRatio: 3/4, borderRadius: Radius.md,
     backgroundColor: Colors.surfaceHighlight, marginBottom: Spacing.md,
   },
   processingCard: {
@@ -222,4 +308,16 @@ const styles = StyleSheet.create({
     backgroundColor: Colors.primary, borderRadius: Radius.full, paddingVertical: 14,
   },
   goWardrobeText: { fontFamily: 'Lato_700Bold', fontSize: FontSizes.bodyMd, color: Colors.onPrimary },
+  batchAddBtn: {
+    backgroundColor: Colors.secondary, padding: Spacing.md, borderRadius: Radius.md,
+    flexDirection: 'row', justifyContent: 'center', alignItems: 'center', marginBottom: Spacing.lg,
+  },
+  batchAddBtnText: { color: Colors.onPrimary, fontFamily: 'Lato_700Bold', marginLeft: 8 },
+  batchGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 10, justifyContent: 'center' },
+  batchItem: { width: SCREEN_WIDTH > 768 ? '23%' : SCREEN_WIDTH > 480 ? '30%' : '45%', height: 120, position: 'relative' },
+  batchImage: { width: '100%', height: '100%', borderRadius: Radius.sm },
+  removeBatchBtn: {
+    position: 'absolute', top: -5, right: -5, backgroundColor: 'red',
+    width: 20, height: 20, borderRadius: 10, justifyContent: 'center', alignItems: 'center',
+  },
 });

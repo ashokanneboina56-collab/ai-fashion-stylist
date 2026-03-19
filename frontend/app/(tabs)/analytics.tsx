@@ -1,6 +1,6 @@
 import React, { useState, useCallback } from 'react';
 import {
-  View, Text, StyleSheet, ScrollView, ActivityIndicator, RefreshControl,
+  View, Text, StyleSheet, ScrollView, ActivityIndicator, RefreshControl, Image,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useFocusEffect } from 'expo-router';
@@ -16,8 +16,13 @@ export default function AnalyticsScreen() {
 
   const fetchAnalytics = useCallback(async () => {
     try {
-      const data = await apiCall('/analytics');
-      setAnalytics(data);
+      const data = await apiCall('/outfit/history');
+      const historyItems = data.history || [];
+      const total_worn = historyItems.length || 0;
+      setAnalytics({
+        total_worn,
+        history: historyItems
+      });
     } catch (e) {
       console.error(e);
     } finally {
@@ -35,12 +40,6 @@ export default function AnalyticsScreen() {
       </SafeAreaView>
     );
   }
-
-  const categories = analytics?.categories || {};
-  const colors = analytics?.colors || {};
-  const styles_data = analytics?.styles || {};
-  const maxCatCount = Math.max(...Object.values(categories).map(Number), 1);
-  const maxColorCount = Math.max(...Object.values(colors).map(Number), 1);
 
   return (
     <SafeAreaView style={styles.safe} edges={['top']}>
@@ -71,85 +70,21 @@ export default function AnalyticsScreen() {
           </Animated.View>
         </View>
 
-        {analytics?.most_worn && (
-          <Animated.View entering={FadeInUp.delay(300)} style={styles.section}>
-            <Text style={styles.sectionTitle}>Most Worn</Text>
-            <View style={styles.itemHighlight}>
-              <View style={styles.highlightIcon}>
-                <Feather name="trending-up" size={20} color={Colors.secondary} />
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>Recently Worn Outfits</Text>
+          {(analytics?.history || []).map((hist: any, idx: number) => (
+            <Animated.View key={hist.history_id} entering={FadeInUp.delay(idx * 100)} style={styles.historyCard}>
+              <Text style={styles.historyDate}>
+                {hist.worn_date ? new Date(hist.worn_date).toLocaleDateString() : 'Recent'}
+              </Text>
+              <View style={styles.historyItems}>
+                {hist.top && <Image source={{ uri: `data:image/jpeg;base64,${hist.top.image_base64}` }} style={styles.histThumb} />}
+                {hist.bottom && <Image source={{ uri: `data:image/jpeg;base64,${hist.bottom.image_base64}` }} style={styles.histThumb} />}
+                {hist.shoes && <Image source={{ uri: `data:image/jpeg;base64,${hist.shoes.image_base64}` }} style={styles.histThumb} />}
               </View>
-              <View style={styles.highlightInfo}>
-                <Text style={styles.highlightName}>{analytics.most_worn.name}</Text>
-                <Text style={styles.highlightMeta}>{analytics.most_worn.category} - Worn {analytics.most_worn.wear_count}x</Text>
-              </View>
-            </View>
-          </Animated.View>
-        )}
-
-        {analytics?.least_worn && (
-          <Animated.View entering={FadeInUp.delay(400)} style={styles.section}>
-            <Text style={styles.sectionTitle}>Least Worn</Text>
-            <View style={styles.itemHighlight}>
-              <View style={[styles.highlightIcon, { backgroundColor: 'rgba(207,102,121,0.15)' }]}>
-                <Feather name="trending-down" size={20} color={Colors.error} />
-              </View>
-              <View style={styles.highlightInfo}>
-                <Text style={styles.highlightName}>{analytics.least_worn.name}</Text>
-                <Text style={styles.highlightMeta}>{analytics.least_worn.category} - Worn {analytics.least_worn.wear_count}x</Text>
-              </View>
-            </View>
-          </Animated.View>
-        )}
-
-        {Object.keys(categories).length > 0 && (
-          <Animated.View entering={FadeInUp.delay(500)} style={styles.section}>
-            <Text style={styles.sectionTitle}>Categories</Text>
-            <View style={styles.chartCard}>
-              {Object.entries(categories).map(([cat, count]) => (
-                <View key={cat} style={styles.barRow}>
-                  <Text style={styles.barLabel}>{cat}</Text>
-                  <View style={styles.barTrack}>
-                    <View style={[styles.barFill, { width: `${(Number(count) / maxCatCount) * 100}%` }]} />
-                  </View>
-                  <Text style={styles.barCount}>{String(count)}</Text>
-                </View>
-              ))}
-            </View>
-          </Animated.View>
-        )}
-
-        {Object.keys(colors).length > 0 && (
-          <Animated.View entering={FadeInUp.delay(600)} style={styles.section}>
-            <Text style={styles.sectionTitle}>Color Distribution</Text>
-            <View style={styles.chartCard}>
-              <View style={styles.colorGrid}>
-                {Object.entries(colors).map(([color, count]) => (
-                  <View key={color} style={styles.colorItem}>
-                    <View style={[styles.colorCircle, { backgroundColor: getColorHex(color) }]} />
-                    <Text style={styles.colorName}>{color}</Text>
-                    <Text style={styles.colorCount}>{String(count)}</Text>
-                  </View>
-                ))}
-              </View>
-            </View>
-          </Animated.View>
-        )}
-
-        {Object.keys(styles_data).length > 0 && (
-          <Animated.View entering={FadeInUp.delay(700)} style={styles.section}>
-            <Text style={styles.sectionTitle}>Style Insights</Text>
-            <View style={styles.chartCard}>
-              <View style={styles.styleGrid}>
-                {Object.entries(styles_data).map(([style, count]) => (
-                  <View key={style} style={styles.styleChip}>
-                    <Text style={styles.styleChipText}>{style}</Text>
-                    <Text style={styles.styleChipCount}>{String(count)}</Text>
-                  </View>
-                ))}
-              </View>
-            </View>
-          </Animated.View>
-        )}
+            </Animated.View>
+          ))}
+        </View>
 
         <View style={{ height: 120 }} />
       </ScrollView>
@@ -214,4 +149,8 @@ const styles = StyleSheet.create({
   },
   styleChipText: { fontFamily: 'Lato_400Regular', fontSize: FontSizes.caption, color: Colors.textSecondary },
   styleChipCount: { fontFamily: 'Lato_700Bold', fontSize: FontSizes.caption, color: Colors.secondary, marginLeft: Spacing.sm },
+  historyCard: { backgroundColor: Colors.surface, borderRadius: Radius.md, padding: Spacing.md, marginBottom: Spacing.sm, borderWidth: 1, borderColor: Colors.border },
+  historyDate: { fontFamily: 'Lato_700Bold', fontSize: FontSizes.caption, color: Colors.textSecondary, marginBottom: 8 },
+  historyItems: { flexDirection: 'row', gap: 8 },
+  histThumb: { width: 50, height: 50, borderRadius: 4 },
 });

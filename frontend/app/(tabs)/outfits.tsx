@@ -1,7 +1,7 @@
 import React, { useState, useCallback } from 'react';
 import {
   View, Text, TouchableOpacity, StyleSheet, ScrollView,
-  Image, ActivityIndicator, FlatList,
+  Image, ActivityIndicator, FlatList, Alert, useWindowDimensions,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useFocusEffect } from 'expo-router';
@@ -11,18 +11,18 @@ import { apiCall } from '../../utils/api';
 import { Colors, Spacing, FontSizes, Radius, Shadows } from '../../constants/theme';
 
 export default function OutfitsScreen() {
+  const { width: SCREEN_WIDTH } = useWindowDimensions();
+  const isLargeScreen = SCREEN_WIDTH > 600;
+
   const [items, setItems] = useState<any[]>([]);
   const [selectedItem, setSelectedItem] = useState<any>(null);
   const [outfits, setOutfits] = useState<any[]>([]);
   const [loading, setLoading] = useState(false);
   const [predicting, setPredicting] = useState(false);
   const [savingOutfit, setSavingOutfit] = useState<string | null>(null);
-
-  useFocusEffect(
-    useCallback(() => {
-      fetchItems();
-    }, [])
-  );
+  const [occasion, setOccasion] = useState('casual');
+  const [source, setSource] = useState('wardrobe'); // 'wardrobe' or 'store'
+  const [showOccasions, setShowOccasions] = useState(false);
 
   const fetchItems = async () => {
     try {
@@ -43,7 +43,11 @@ export default function OutfitsScreen() {
     try {
       const data = await apiCall('/outfit/predict', {
         method: 'POST',
-        body: JSON.stringify({ item_id: selectedItem.item_id }),
+        body: JSON.stringify({ 
+          item_id: selectedItem.item_id,
+          occasion: occasion,
+          source: source
+        }),
       });
       setOutfits(data.outfits || []);
     } catch (e: any) {
@@ -74,34 +78,70 @@ export default function OutfitsScreen() {
     }
   };
 
-  const wearOutfit = async (outfit: any) => {
+  const wearOutfit = async (outfitId: string) => {
     try {
-      await saveOutfit(outfit);
       await apiCall('/outfit/wear', {
         method: 'POST',
-        body: JSON.stringify({ outfit_id: outfit.outfit_id }),
+        body: JSON.stringify({ outfit_id: outfitId }),
       });
+      Alert.alert('Success', 'Outfit marked as worn!');
     } catch (e) {
       console.error(e);
+      Alert.alert('Error', 'Failed to update history');
     }
   };
+
+  const renderOutfit = (outfit: any) => (
+    <View key={outfit.outfit_id} style={styles.outfitCard}>
+      <View style={styles.outfitHeader}>
+        <View style={styles.scoreBadge}>
+          <Text style={styles.scoreText}>{outfit.compatibility_score}% Match</Text>
+        </View>
+        {outfit.reason && <Text style={styles.outfitReason} numberOfLines={2}>{outfit.reason}</Text>}
+      </View>
+      
+      <View style={styles.outfitGrid}>
+        {renderOutfitItem(outfit.top, 'Top')}
+        {renderOutfitItem(outfit.bottom, 'Bottom')}
+        {renderOutfitItem(outfit.shoes, 'Shoes')}
+        {renderOutfitItem(outfit.accessory, 'Accessory')}
+      </View>
+
+      <View style={styles.outfitActions}>
+        <TouchableOpacity style={styles.wearBtn} onPress={() => wearOutfit(outfit.outfit_id)}>
+          <Text style={styles.wearBtnText}>Mark as Worn</Text>
+        </TouchableOpacity>
+      </View>
+    </View>
+  );
 
   const renderOutfitItem = (item: any, label: string) => {
     if (!item) return null;
     return (
-      <View style={styles.outfitPiece}>
-        {item.image_base64 ? (
-          <Image source={{ uri: `data:image/jpeg;base64,${item.image_base64}` }} style={styles.outfitPieceImage} />
+      <View style={[styles.outfitPiece, { width: isLargeScreen ? '48%' : '100%' }]}>
+        <View style={styles.sourceTag}>
+          <Text style={styles.sourceTagText}>
+            {item.is_store_item ? "From Online Store" : "From Your Closet"}
+          </Text>
+        </View>
+        {item?.image_base64 ? (
+          <Image source={{ uri: `data:image/jpeg;base64,${item.image_base64}` }} style={styles.outfitPieceImage} resizeMode="cover" />
         ) : (
           <View style={[styles.outfitPieceImage, styles.placeholder]}>
             <MaterialCommunityIcons name="hanger" size={20} color={Colors.textTertiary} />
           </View>
         )}
         <Text style={styles.outfitPieceLabel}>{label}</Text>
-        <Text style={styles.outfitPieceName} numberOfLines={1}>{item.name}</Text>
+        <Text style={styles.outfitPieceName} numberOfLines={1}>{item?.name || 'Unnamed'}</Text>
       </View>
     );
   };
+
+  useFocusEffect(
+    useCallback(() => {
+      fetchItems();
+    }, [])
+  );
 
   return (
     <SafeAreaView style={styles.safe} edges={['top']}>
@@ -149,6 +189,37 @@ export default function OutfitsScreen() {
 
           {selectedItem && (
             <View style={styles.generateWrap}>
+              <View style={styles.sourceRow}>
+                <TouchableOpacity
+                  style={[styles.sourceBtn, source === 'wardrobe' && styles.sourceBtnActive]}
+                  onPress={() => setSource('wardrobe')}
+                >
+                  <Feather name="box" size={16} color={source === 'wardrobe' ? Colors.onPrimary : Colors.textSecondary} />
+                  <Text style={[styles.sourceBtnText, source === 'wardrobe' && styles.sourceBtnTextActive]}>My Wardrobe</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[styles.sourceBtn, source === 'store' && styles.sourceBtnActive]}
+                  onPress={() => setSource('store')}
+                >
+                  <Feather name="shopping-bag" size={16} color={source === 'store' ? Colors.onPrimary : Colors.textSecondary} />
+                  <Text style={[styles.sourceBtnText, source === 'store' && styles.sourceBtnTextActive]}>Online Store</Text>
+                </TouchableOpacity>
+              </View>
+
+              <View style={styles.occasionRow}>
+                <Text style={styles.occasionLabel}>Occasion:</Text>
+                {['casual', 'formal', 'sporty'].map((occ) => (
+                  <TouchableOpacity
+                    key={occ}
+                    style={[styles.occChip, occasion === occ && styles.occChipActive]}
+                    onPress={() => setOccasion(occ)}
+                  >
+                    <Text style={[styles.occChipText, occasion === occ && styles.occChipTextActive]}>
+                      {occ.charAt(0).toUpperCase() + occ.slice(1)}
+                    </Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
               <TouchableOpacity
                 testID="generate-outfit-btn"
                 style={styles.generateBtn}
@@ -175,49 +246,8 @@ export default function OutfitsScreen() {
           )}
 
           {outfits.map((outfit, index) => (
-            <Animated.View key={outfit.outfit_id} entering={FadeInRight.delay(index * 200).duration(500)} style={styles.outfitCard}>
-              <View style={styles.outfitHeader}>
-                <Text style={styles.outfitTitle}>Outfit {index + 1}</Text>
-                <View style={styles.scoreBadge}>
-                  <Text style={styles.scoreText}>{outfit.compatibility_score}%</Text>
-                </View>
-              </View>
-
-              <View style={styles.outfitGrid}>
-                {renderOutfitItem(outfit.top, 'Top')}
-                {renderOutfitItem(outfit.bottom, 'Bottom')}
-                {renderOutfitItem(outfit.shoes, 'Shoes')}
-                {renderOutfitItem(outfit.accessory, 'Accessory')}
-              </View>
-
-              {outfit.reason ? (
-                <Text style={styles.outfitReason}>{outfit.reason}</Text>
-              ) : null}
-
-              <View style={styles.outfitActions}>
-                <TouchableOpacity
-                  testID={`wear-outfit-${outfit.outfit_id}`}
-                  style={styles.wearBtn}
-                  onPress={() => wearOutfit(outfit)}
-                >
-                  <Feather name="check-circle" size={16} color={Colors.onPrimary} />
-                  <Text style={styles.wearBtnText}>Wear Today</Text>
-                </TouchableOpacity>
-                <TouchableOpacity
-                  testID={`save-outfit-${outfit.outfit_id}`}
-                  style={styles.saveBtn}
-                  onPress={() => saveOutfit(outfit)}
-                >
-                  {savingOutfit === outfit.outfit_id ? (
-                    <ActivityIndicator size="small" color={Colors.secondary} />
-                  ) : (
-                    <>
-                      <Feather name="bookmark" size={16} color={Colors.secondary} />
-                      <Text style={styles.saveBtnText}>Save</Text>
-                    </>
-                  )}
-                </TouchableOpacity>
-              </View>
+            <Animated.View key={outfit.outfit_id} entering={FadeInRight.delay(index * 200).duration(500)}>
+              {renderOutfit(outfit)}
             </Animated.View>
           ))}
 
@@ -278,14 +308,98 @@ const styles = StyleSheet.create({
   outfitReason: { fontFamily: 'Lato_400Regular', fontSize: FontSizes.bodyMd, color: Colors.textSecondary, marginTop: Spacing.sm, fontStyle: 'italic' },
   outfitActions: { flexDirection: 'row', marginTop: Spacing.md, gap: Spacing.sm },
   wearBtn: {
-    flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
-    backgroundColor: Colors.primary, borderRadius: Radius.full, paddingVertical: 12,
+    backgroundColor: Colors.secondary,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 12,
+    borderRadius: Radius.md,
+    gap: 8,
+    marginTop: 12,
   },
-  wearBtnText: { color: Colors.onPrimary, fontFamily: 'Lato_700Bold', fontSize: FontSizes.bodyMd, marginLeft: 6 },
-  saveBtn: {
-    flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
-    backgroundColor: 'transparent', borderRadius: Radius.full, paddingVertical: 12,
-    borderWidth: 1, borderColor: Colors.secondary,
+  wearBtnText: {
+    color: Colors.onPrimary,
+    fontFamily: 'Lato_700Bold',
+    fontSize: FontSizes.bodySm,
   },
-  saveBtnText: { color: Colors.secondary, fontFamily: 'Lato_700Bold', fontSize: FontSizes.bodyMd, marginLeft: 6 },
+  occasionRow: {
+    flexDirection: 'row',
+    alignItems: 'center', 
+    flexWrap: 'wrap',
+    marginBottom: 12,
+    gap: 8,
+  },
+  occasionLabel: {
+    fontFamily: 'Lato_700Bold',
+    fontSize: FontSizes.bodySm,
+    color: Colors.textSecondary,
+    marginRight: 4,
+  },
+  occChip: {
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: Radius.full,
+    backgroundColor: Colors.surface,
+    borderWidth: 1,
+    borderColor: Colors.border,
+  },
+  occChipActive: {
+    backgroundColor: Colors.secondary,
+    borderColor: Colors.secondary,
+  },
+  occChipText: {
+    fontSize: FontSizes.caption,
+    color: Colors.textSecondary,
+    fontFamily: 'Lato_400Regular',
+  },
+  occChipTextActive: {
+    color: Colors.onPrimary,
+    fontFamily: 'Lato_700Bold',
+  },
+  sourceRow: {
+    flexDirection: 'row',
+    gap: 8,
+    marginBottom: 16,
+  },
+  sourceBtn: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 12,
+    borderRadius: Radius.md,
+    backgroundColor: Colors.surface,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    gap: 8,
+    minHeight: 44,
+  },
+  sourceBtnActive: {
+    backgroundColor: Colors.secondary,
+    borderColor: Colors.secondary,
+  },
+  sourceBtnText: {
+    fontFamily: 'Lato_700Bold',
+    fontSize: FontSizes.bodySm,
+    color: Colors.textSecondary,
+  },
+  sourceBtnTextActive: {
+    color: Colors.onPrimary,
+  },
+  sourceTag: {
+    position: 'absolute',
+    top: 4,
+    left: 4,
+    backgroundColor: 'rgba(0,0,0,0.5)',
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 4,
+    zIndex: 1,
+  },
+  sourceTagText: {
+    color: '#fff',
+    fontSize: 8,
+    fontFamily: 'Lato_700Bold',
+    textTransform: 'uppercase',
+  },
 });

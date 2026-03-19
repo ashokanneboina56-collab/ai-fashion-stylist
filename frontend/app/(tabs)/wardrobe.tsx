@@ -1,7 +1,7 @@
 import React, { useState, useCallback } from 'react';
 import {
   View, Text, TouchableOpacity, StyleSheet, FlatList,
-  TextInput, Image, ActivityIndicator, RefreshControl, Dimensions,
+  TextInput, Image, ActivityIndicator, RefreshControl, useWindowDimensions, Alert,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter, useFocusEffect } from 'expo-router';
@@ -11,64 +11,100 @@ import { apiCall } from '../../utils/api';
 import { Colors, Spacing, FontSizes, Radius, Shadows } from '../../constants/theme';
 
 const CATEGORIES = ['All', 'Tops', 'Bottoms', 'Shoes', 'Accessories', 'Outerwear', 'Dresses', 'Activewear'];
-const { width: SCREEN_WIDTH } = Dimensions.get('window');
 
 export default function WardrobeScreen() {
+  const { width: SCREEN_WIDTH } = useWindowDimensions();
+  const numColumns = SCREEN_WIDTH > 1024 ? 4 : SCREEN_WIDTH > 768 ? 3 : 2;
+  const cardWidth = (SCREEN_WIDTH - Spacing.screenPadding * 2 - Spacing.sm * (numColumns - 1)) / numColumns;
+
   const [items, setItems] = useState<any[]>([]);
+  const [filteredItems, setFilteredItems] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
-  const [search, setSearch] = useState('');
+  const [searchQuery, setSearchQuery] = useState('');
   const [category, setCategory] = useState('All');
   const [sortBy, setSortBy] = useState('');
   const router = useRouter();
 
   const fetchItems = useCallback(async () => {
     try {
-      let params = '';
-      if (category !== 'All') params += `?category=${category}`;
-      if (search) params += `${params ? '&' : '?'}search=${search}`;
-      if (sortBy) params += `${params ? '&' : '?'}sort=${sortBy}`;
-      const data = await apiCall(`/wardrobe${params}`);
-      setItems(data.items || []);
+      setLoading(true);
+      const data = await apiCall('/wardrobe');
+      const wardrobeItems = data.items || [];
+      setItems(wardrobeItems);
+      setFilteredItems(wardrobeItems);
     } catch (e) {
       console.error(e);
     } finally {
       setLoading(false);
       setRefreshing(false);
     }
-  }, [category, search, sortBy]);
+  }, []);
+
+  const handleSearch = (text: string) => {
+    setSearchQuery(text);
+    const filtered = items.filter(item => 
+      (item.name?.toLowerCase() || '').includes(text.toLowerCase()) ||
+      (item.category?.toLowerCase() || '').includes(text.toLowerCase()) ||
+      (item.color?.toLowerCase() || '').includes(text.toLowerCase())
+    );
+    setFilteredItems(filtered);
+  };
 
   useFocusEffect(
     useCallback(() => {
-      setLoading(true);
       fetchItems();
     }, [fetchItems])
   );
 
   const onRefresh = () => { setRefreshing(true); fetchItems(); };
 
+  const deleteItem = async (itemId: string) => {
+    Alert.alert('Delete Item', 'Are you sure you want to remove this item?', [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Delete',
+        style: 'destructive',
+        onPress: async () => {
+          try {
+            await apiCall(`/wardrobe/${itemId}`, { method: 'DELETE' });
+            setItems(prev => prev.filter(i => i.item_id !== itemId));
+          } catch (e) {
+            console.error(e);
+          }
+        }
+      }
+    ]);
+  };
+
   const renderItem = ({ item, index }: { item: any; index: number }) => (
-    <Animated.View entering={FadeInUp.delay(index * 80).duration(400)} style={styles.cardWrap}>
+    <Animated.View entering={FadeInUp.delay(index * 80).duration(400)} style={[styles.cardWrap, { width: cardWidth }]}>
       <TouchableOpacity
-        testID={`wardrobe-item-${item.item_id}`}
+        testID={`wardrobe-item-${item?.item_id}`}
         style={styles.card}
-        onPress={() => router.push(`/clothing/${item.item_id}`)}
+        onPress={() => router.push(`/clothing/${item?.item_id}`)}
         activeOpacity={0.8}
       >
-        {item.image_base64 ? (
-          <Image source={{ uri: `data:image/jpeg;base64,${item.image_base64}` }} style={styles.cardImage} />
+        {item?.image_base64 ? (
+          <Image source={{ uri: `data:image/jpeg;base64,${item.image_base64}` }} style={styles.cardImage} resizeMode="cover" />
         ) : (
           <View style={[styles.cardImage, styles.placeholderImage]}>
             <Ionicons name="shirt-outline" size={40} color={Colors.textTertiary} />
           </View>
         )}
+        <TouchableOpacity 
+          style={styles.deleteIcon} 
+          onPress={() => deleteItem(item?.item_id)}
+        >
+          <Feather name="trash-2" size={16} color="#fff" />
+        </TouchableOpacity>
         <View style={styles.cardInfo}>
-          <Text style={styles.cardName} numberOfLines={1}>{item.name}</Text>
+          <Text style={styles.cardName} numberOfLines={1}>{item?.name || 'Unnamed Item'}</Text>
           <View style={styles.cardMeta}>
-            <View style={[styles.colorDot, { backgroundColor: getColorHex(item.color) }]} />
-            <Text style={styles.cardCategory}>{item.category}</Text>
+            <View style={[styles.colorDot, { backgroundColor: getColorHex(item?.color || 'Grey') }]} />
+            <Text style={styles.cardCategory}>{item?.category || 'Uncategorized'}</Text>
           </View>
-          <Text style={styles.cardWear}>Worn {item.wear_count || 0}x</Text>
+          <Text style={styles.cardWear}>Worn {item?.wear_count || 0}x</Text>
         </View>
       </TouchableOpacity>
     </Animated.View>
@@ -91,19 +127,24 @@ export default function WardrobeScreen() {
       </View>
 
       <View style={styles.searchRow}>
-        <View style={styles.searchWrap}>
-          <Feather name="search" size={16} color={Colors.textTertiary} />
+        <View style={styles.searchBar}>
+          <Feather name="search" size={18} color={Colors.textTertiary} />
           <TextInput
             testID="wardrobe-search-input"
+            placeholder="Search items, colors..."
             style={styles.searchInput}
-            placeholder="Search wardrobe..."
             placeholderTextColor={Colors.textTertiary}
-            value={search}
-            onChangeText={setSearch}
-            onSubmitEditing={fetchItems}
-            returnKeyType="search"
+            value={searchQuery}
+            onChangeText={handleSearch}
           />
         </View>
+        <TouchableOpacity 
+          style={styles.filterBtn}
+          onPress={() => router.push('/recommendations')}
+        >
+          <Ionicons name="cart-outline" size={20} color={Colors.secondary} />
+          <Text style={{ marginLeft: 4, color: Colors.secondary, fontFamily: 'Lato_700Bold' }}>Store</Text>
+        </TouchableOpacity>
       </View>
 
       <FlatList
@@ -127,20 +168,21 @@ export default function WardrobeScreen() {
         <View style={styles.centered}>
           <ActivityIndicator size="large" color={Colors.secondary} />
         </View>
-      ) : items.length === 0 ? (
+      ) : filteredItems.length === 0 ? (
         <View style={styles.centered}>
-          <Ionicons name="shirt-outline" size={64} color={Colors.textTertiary} />
-          <Text style={styles.emptyTitle}>Your wardrobe is empty</Text>
-          <Text style={styles.emptySubtitle}>Add your first clothing item to get started</Text>
-          <TouchableOpacity testID="empty-add-btn" style={styles.emptyAddBtn} onPress={() => router.push('/add-clothing')}>
-            <Text style={styles.emptyAddBtnText}>Add Clothing</Text>
+          <Ionicons name="search-outline" size={64} color={Colors.textTertiary} />
+          <Text style={styles.emptyTitle}>No items found</Text>
+          <Text style={styles.emptySubtitle}>Try searching for something else or clear filters</Text>
+          <TouchableOpacity style={styles.emptyAddBtn} onPress={() => { handleSearch(''); setCategory('All'); }}>
+            <Text style={styles.emptyAddBtnText}>Clear Search</Text>
           </TouchableOpacity>
         </View>
       ) : (
         <FlatList
+          key={numColumns} // Force re-render when columns change
           testID="wardrobe-grid"
-          data={items}
-          numColumns={2}
+          data={filteredItems}
+          numColumns={numColumns}
           keyExtractor={(item) => item.item_id}
           renderItem={renderItem}
           contentContainerStyle={styles.grid}
@@ -176,17 +218,39 @@ const styles = StyleSheet.create({
     borderRadius: Radius.full, justifyContent: 'center', alignItems: 'center',
     ...Shadows.glow,
   },
-  searchRow: { paddingHorizontal: Spacing.screenPadding, marginBottom: Spacing.sm },
-  searchWrap: {
+  searchRow: { 
+    flexDirection: 'row', 
+    alignItems: 'center', 
+    paddingHorizontal: Spacing.screenPadding, 
+    marginBottom: Spacing.sm 
+  },
+  searchBar: {
     flexDirection: 'row', alignItems: 'center', backgroundColor: Colors.surfaceHighlight,
     borderRadius: Radius.md, paddingHorizontal: Spacing.md, paddingVertical: 10,
-    borderWidth: 1, borderColor: Colors.border,
+    borderWidth: 1, borderColor: Colors.border, flex: 1,
+  },
+  filterBtn: {
+    backgroundColor: Colors.surface,
+    paddingHorizontal: Spacing.md,
+    height: 48,
+    borderRadius: Radius.md,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1,
+    borderColor: Colors.border,
+    marginLeft: Spacing.sm,
   },
   searchInput: {
     flex: 1, color: Colors.textPrimary, fontFamily: 'Lato_400Regular',
     fontSize: FontSizes.bodyMd, marginLeft: Spacing.sm,
   },
-  filterList: { paddingHorizontal: Spacing.screenPadding, marginBottom: Spacing.md },
+  filterList: {
+    paddingHorizontal: Spacing.screenPadding,
+    paddingVertical: Spacing.sm,
+    marginBottom: Spacing.md,
+    maxHeight: 60,
+  },
   filterChip: {
     paddingHorizontal: Spacing.md, paddingVertical: Spacing.sm,
     borderRadius: Radius.full, backgroundColor: Colors.surface,
@@ -203,9 +267,9 @@ const styles = StyleSheet.create({
     paddingVertical: Spacing.md, borderRadius: Radius.full, marginTop: Spacing.lg,
   },
   emptyAddBtnText: { color: Colors.onPrimary, fontFamily: 'Lato_700Bold', fontSize: FontSizes.bodyLg },
-  grid: { paddingHorizontal: Spacing.screenPadding, paddingBottom: 100 },
-  gridRow: { justifyContent: 'space-between' },
-  cardWrap: { width: (SCREEN_WIDTH - Spacing.screenPadding * 2 - Spacing.sm) / 2, marginBottom: Spacing.md },
+  grid: { paddingHorizontal: Spacing.screenPadding, paddingBottom: 100, overflow: 'hidden' },
+  gridRow: { justifyContent: 'flex-start', gap: Spacing.sm },
+  cardWrap: { marginBottom: Spacing.md },
   card: {
     backgroundColor: Colors.surface, borderRadius: Radius.md,
     overflow: 'hidden', borderWidth: 0.5, borderColor: Colors.border, ...Shadows.soft,
@@ -218,4 +282,9 @@ const styles = StyleSheet.create({
   colorDot: { width: 10, height: 10, borderRadius: 5, marginRight: 6 },
   cardCategory: { fontFamily: 'Lato_400Regular', fontSize: FontSizes.caption, color: Colors.textSecondary },
   cardWear: { fontFamily: 'Lato_400Regular', fontSize: FontSizes.tiny, color: Colors.textTertiary, marginTop: 2 },
+  deleteIcon: {
+    position: 'absolute', top: 10, right: 10,
+    backgroundColor: 'rgba(255,0,0,0.6)', width: 28, height: 28,
+    borderRadius: 14, justifyContent: 'center', alignItems: 'center',
+  },
 });

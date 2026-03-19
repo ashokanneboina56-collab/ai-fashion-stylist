@@ -111,3 +111,10 @@ __pycache__/
 .DS_Store
 Thumbs.db
 
+# Metro / React Native cache
+frontend/.metro-cache/
+
+# General caches
+node_modules/
+*.log
+.env

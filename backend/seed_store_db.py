@@ -49,9 +49,9 @@ async def seed_db():
     print("Generating 60 fake store items with embeddings...")
     
     for _ in range(60):
-        cat = CATEGORIES[int(uuid.uuid4()) % len(CATEGORIES)]
-        color = COLORS[int(uuid.uuid4()) % len(COLORS)]
-        style = STYLES[int(uuid.uuid4()) % len(STYLES)]
+        cat = CATEGORIES[uuid.uuid4().int % len(CATEGORIES)]
+        color = COLORS[uuid.uuid4().int % len(COLORS)]
+        style = STYLES[uuid.uuid4().int % len(STYLES)]
         
         img = get_placeholder_image(cat, color)
         

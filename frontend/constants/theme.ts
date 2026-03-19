@@ -40,6 +40,7 @@ export const FontSizes = {
   h3: 20,
   bodyLg: 16,
   bodyMd: 14,
+  bodySm: 13,
   caption: 12,
   tiny: 10,
 };

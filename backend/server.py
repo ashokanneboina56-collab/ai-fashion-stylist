@@ -30,6 +30,14 @@ model = CLIPModel.from_pretrained("patrickjohncyh/fashion-clip").to(device)
 processor = CLIPProcessor.from_pretrained("patrickjohncyh/fashion-clip")
 model.eval()
 
+# Model Warmup
+def warmup():
+    with torch.no_grad():
+        dummy = Image.new("RGB", (224, 224))
+        inputs = processor(images=dummy, return_tensors="pt").to(device)
+        model.get_image_features(**inputs)
+warmup()
+
 # --- Fashion Constants ---
 TOPS = ["t-shirt", "shirt", "hoodie", "jacket"]
 BOTTOMS = ["jeans", "trousers", "shorts"]
@@ -95,6 +103,7 @@ class WardrobeBatchAdd(BaseModel):
 class OutfitPredictRequest(BaseModel):
     item_id: str
     occasion: Optional[str] = None
+    source: Optional[str] = "wardrobe"
 
 class OutfitSaveRequest(BaseModel):
     top_id: Optional[str] = None
@@ -213,6 +222,11 @@ def extract_dominant_color(image):
         img_array = np.array(image)
         pixels = img_array.reshape((-1, 3))
         
+        # Remove dark noise (pixels with low sum of RGB)
+        pixels = pixels[np.sum(pixels, axis=1) > 30]
+        if len(pixels) == 0:
+            return "black"
+            
         kmeans = KMeans(n_clusters=3, n_init=10)
         kmeans.fit(pixels)
         
@@ -262,6 +276,10 @@ async def analyze_clothing_image(image_base64: str) -> dict:
                 best_idx = probs.argmax().item()
                 results[key] = label_set[best_idx]
         
+        # Category validation safety
+        if results.get("category") not in CATEGORIES:
+            results["category"] = "t-shirt"
+            
         # Dominant color extraction
         results["color"] = extract_dominant_color(image)
         results["name"] = f"{results['color'].capitalize()} {results['category'].capitalize()}"
@@ -276,11 +294,28 @@ async def analyze_clothing_image(image_base64: str) -> dict:
             "name": "Clothing Item"
         }
 
-async def generate_outfit_suggestions(wardrobe_items: list, selected_item: dict, occasion: str = None) -> list:
+async def generate_outfit_suggestions(wardrobe_items: list, selected_item: dict, user_id: str = None, occasion: str = None) -> list:
     try:
-        # Pre-filter by category
+        # 1. Cache embeddings as tensors to avoid repeated conversion
+        item_emb_cache = {}
+        for item in wardrobe_items:
+            # Handle both 'item_id' (wardrobe) and 'product_id' (store)
+            iid = item.get("item_id") or item.get("product_id")
+            if iid and "embedding" in item:
+                item_emb_cache[iid] = torch.tensor(item["embedding"]).to(device)
+
+        # 2. Get history to penalize repeated outfits
+        history_keys = set()
+        if user_id:
+            hist = await db.outfit_history.find({"user_id": user_id}).to_list(20)
+            for h in hist:
+                outfit = await db.outfits.find_one({"outfit_id": h["outfit_id"]})
+                if outfit:
+                    history_keys.add((outfit.get("top_id"), outfit.get("bottom_id"), outfit.get("shoes_id")))
+
+        # 3. Pre-filter by category
         selected_cat = selected_item["category"]
-        selected_emb = torch.tensor(selected_item["embedding"]).to(device) if "embedding" in selected_item else None
+        selected_id = selected_item.get("item_id") or selected_item.get("product_id")
         
         # Matching targets based on selected category
         tops, bottoms, shoes_list = [], [], []
@@ -298,20 +333,18 @@ async def generate_outfit_suggestions(wardrobe_items: list, selected_item: dict,
             bottoms = [i for i in wardrobe_items if i["category"] in BOTTOMS]
             shoes_list = [selected_item]
         elif selected_cat in DRESSES:
-            tops = [None]
-            bottoms = [None]
             shoes_list = [i for i in wardrobe_items if i["category"] in SHOES]
-            # Dresses are a special case, but let's keep it simple
             combinations = []
             for s in (shoes_list if shoes_list else [None]):
                 score = 75.0
-                if s and "embedding" in s and "embedding" in selected_item:
+                sid = s.get("item_id") or s.get("product_id") if s else None
+                if sid and sid in item_emb_cache and selected_id in item_emb_cache:
                     score = torch.nn.functional.cosine_similarity(
-                        torch.tensor(selected_item["embedding"]).to(device), 
-                        torch.tensor(s["embedding"]).to(device)
+                        item_emb_cache[selected_id].unsqueeze(0), 
+                        item_emb_cache[sid].unsqueeze(0)
                     ).item() * 100
                 combinations.append({
-                    "top_id": None, "bottom_id": None, "shoes_id": s["item_id"] if s else None,
+                    "top_id": None, "bottom_id": None, "shoes_id": sid,
                     "accessory_id": None, "compatibility_score": min(100, max(0, score)),
                     "reason": "FashionCLIP matching"
                 })
@@ -319,22 +352,36 @@ async def generate_outfit_suggestions(wardrobe_items: list, selected_item: dict,
         else:
             return []
 
-        # Generate combinations
+        # 4. Generate combinations
         combinations = []
+        seen_combos = set() # For diversity filtering
+        
         for t in (tops if tops else [None]):
             for b in (bottoms if bottoms else [None]):
                 for s in (shoes_list if shoes_list else [None]):
                     items = [i for i in [t, b, s] if i]
                     if len(items) < 2: continue
                     
+                    tid = t.get("item_id") or t.get("product_id") if t else None
+                    bid = b.get("item_id") or b.get("product_id") if b else None
+                    sid = s.get("item_id") or s.get("product_id") if s else None
+                    
+                    # Diversity Filter: Avoid same (top, bottom) combination
+                    combo_key = (tid, bid)
+                    if combo_key in seen_combos: continue
+                    
                     # Embedding similarity
                     sims = []
-                    for i in range(len(items)):
-                        for j in range(i + 1, len(items)):
-                            if "embedding" in items[i] and "embedding" in items[j]:
-                                e1 = torch.tensor(items[i]["embedding"]).to(device)
-                                e2 = torch.tensor(items[j]["embedding"]).to(device)
-                                sims.append(torch.nn.functional.cosine_similarity(e1, e2).item())
+                    item_ids = [tid, bid, sid]
+                    for i in range(len(item_ids)):
+                        for j in range(i + 1, len(item_ids)):
+                            id1, id2 = item_ids[i], item_ids[j]
+                            if id1 in item_emb_cache and id2 in item_emb_cache:
+                                sim = torch.nn.functional.cosine_similarity(
+                                    item_emb_cache[id1].unsqueeze(0), 
+                                    item_emb_cache[id2].unsqueeze(0)
+                                ).item()
+                                sims.append(sim)
                     
                     emb_sim = sum(sims) / len(sims) if sims else 0.7
                     
@@ -356,21 +403,21 @@ async def generate_outfit_suggestions(wardrobe_items: list, selected_item: dict,
                     occ_boost = 0
                     if occasion and occasion in OCCASIONS:
                         occ_rules = OCCASIONS[occasion]
-                        matches = 0
-                        for i in items:
-                            if i["category"] in occ_rules.get("tops", []) or \
-                               i["category"] in occ_rules.get("bottoms", []) or \
-                               i["category"] in occ_rules.get("shoes", []):
-                                matches += 1
+                        matches = sum(1 for i in items if i["category"] in (occ_rules.get("tops", []) + occ_rules.get("bottoms", []) + occ_rules.get("shoes", [])))
                         occ_boost = (matches / len(items)) * 15
 
                     # Final Score
                     final_score = (0.6 * emb_sim * 100) + (20 * color_score) + (20 * style_match) + occ_boost
                     
+                    # Repeated outfit penalty
+                    if (tid, bid, sid) in history_keys:
+                        final_score -= 15
+                    
+                    seen_combos.add(combo_key)
                     combinations.append({
-                        "top_id": t["item_id"] if t else None,
-                        "bottom_id": b["item_id"] if b else None,
-                        "shoes_id": s["item_id"] if s else None,
+                        "top_id": tid,
+                        "bottom_id": bid,
+                        "shoes_id": sid,
                         "accessory_id": None,
                         "compatibility_score": min(100, max(0, final_score)),
                         "reason": f"Visual similarity with {occasion if occasion else 'casual'} style boost"
@@ -382,25 +429,47 @@ async def generate_outfit_suggestions(wardrobe_items: list, selected_item: dict,
         logger.error(f"Outfit generation error: {e}")
         return []
 
-async def generate_recommendations(wardrobe_items: list, user_profile: dict = None, category: str = None) -> list:
+async def generate_recommendations(wardrobe_items: list, user_profile: dict = None, price_range: str = None, platform: str = None, category: str = None) -> list:
     try:
         # Fetch items from fake store
         store_query = {}
         if category and category != "All":
             store_query["category"] = category
         
+        # Add basic platform filtering if provided
+        if platform and platform != "All":
+            store_query["store"] = platform
+        
         store_items = await db.store_items.find(store_query, {"_id": 0}).to_list(100)
         if not store_items: return []
         
-        # Simple preference matching
+        # 2. Get user reference embeddings (avg of wardrobe items)
+        ref_embs = []
+        for item in wardrobe_items:
+            if "embedding" in item:
+                ref_embs.append(torch.tensor(item["embedding"]).to(device))
+        
+        avg_ref_emb = torch.mean(torch.stack(ref_embs), dim=0) if ref_embs else None
+        
+        # 3. Simple preference matching
         user_styles = [i.get("style") for i in wardrobe_items if i.get("style")]
         fav_style = max(set(user_styles), key=user_styles.count) if user_styles else "casual"
         
         # Rank store items
         recommendations = []
         for s_item in store_items:
-            score = 70
-            if s_item.get("style") == fav_style: score += 15
+            if "embedding" not in s_item: continue
+            
+            score = 60 # Base
+            
+            # Style bonus
+            if s_item.get("style") == fav_style: score += 10
+            
+            # Embedding similarity score
+            if avg_ref_emb is not None:
+                s_emb = torch.tensor(s_item["embedding"]).to(device)
+                sim = torch.nn.functional.cosine_similarity(avg_ref_emb.unsqueeze(0), s_emb.unsqueeze(0)).item()
+                score += (sim * 30) # Weights embedding similarity at 30% of base ranking
             
             recommendations.append({
                 "name": s_item["name"],
@@ -410,7 +479,7 @@ async def generate_recommendations(wardrobe_items: list, user_profile: dict = No
                 "price_value": s_item["price"],
                 "store": "Fashion AI Store",
                 "search_url": s_item.get("image_url", ""),
-                "match_score": score,
+                "match_score": min(100, score),
                 "wardrobe_match": f"Matches your {fav_style} style"
             })
             
@@ -646,17 +715,19 @@ async def predict_outfit(data: OutfitPredictRequest, user: dict = Depends(get_cu
     if not selected:
         raise HTTPException(status_code=404, detail="Item not found")
     
-    all_items = await db.wardrobe_items.find({"user_id": user["user_id"]}, {"_id": 0}).to_list(100)
-    
-    # Fallback to store items if wardrobe is small
-    if len(all_items) < 3:
-        store_items = await db.store_items.find({"category": {"$in": CATEGORIES}}, {"_id": 0}).to_list(20)
-        # Add store items to context for matching
-        for s in store_items:
-            s["item_id"] = s["product_id"] # map field name
-        all_items.extend(store_items)
+    # Strictly choose source
+    if data.source == "store":
+        all_items = await db.store_items.find({"category": {"$in": CATEGORIES}}, {"_id": 0}).to_list(100)
+        # map field name for consistency in matching logic
+        for s in all_items:
+            s["item_id"] = s["product_id"]
+            s["is_store_item"] = True
+    else:
+        all_items = await db.wardrobe_items.find({"user_id": user["user_id"]}, {"_id": 0}).to_list(100)
+        for i in all_items:
+            s["is_store_item"] = False
 
-    suggestions = await generate_outfit_suggestions(all_items, selected, occasion=data.occasion)
+    suggestions = await generate_outfit_suggestions(all_items, selected, user_id=user["user_id"], occasion=data.occasion)
     
     items_map = {i.get("item_id") or i.get("product_id"): i for i in all_items}
     enriched = []
@@ -704,7 +775,19 @@ async def wear_outfit(data: WearOutfitRequest, user: dict = Depends(get_current_
     if outfit:
         for field in ["top_id", "bottom_id", "shoes_id", "accessory_id"]:
             if outfit.get(field):
-                await db.wardrobe_items.update_one({"item_id": outfit[field]}, {"$inc": {"wear_count": 1}})
+                item = await db.wardrobe_items.find_one({"item_id": outfit[field]})
+                if item:
+                    # Increment wear count
+                    await db.wardrobe_items.update_one({"item_id": outfit[field]}, {"$inc": {"wear_count": 1}})
+                    
+                    # User preference learning: track preferred colors and styles
+                    color = item.get("color")
+                    style = item.get("style")
+                    if color:
+                        await db.users.update_one({"user_id": user["user_id"]}, {"$inc": {f"preferences.colors.{color}": 1}})
+                    if style:
+                        await db.users.update_one({"user_id": user["user_id"]}, {"$inc": {f"preferences.styles.{style}": 1}})
+                        
     history.pop("_id", None)
     return history
 
@@ -716,7 +799,7 @@ async def get_outfit_history(user: dict = Depends(get_current_user)):
         if outfit:
             for field in ["top_id", "bottom_id", "shoes_id", "accessory_id"]:
                 if outfit.get(field):
-                    item = await db.wardrobe_items.find_one({"item_id": outfit[field]}, {"_id": 0, "image_base64": 0})
+                    item = await db.wardrobe_items.find_one({"item_id": outfit[field]}, {"_id": 0})
                     h[field.replace("_id", "")] = item
             h["compatibility_score"] = outfit.get("compatibility_score")
             h["reason"] = outfit.get("reason")
