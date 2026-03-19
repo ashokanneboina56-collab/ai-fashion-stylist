@@ -1,0 +1,816 @@
+from fastapi import FastAPI, APIRouter, HTTPException, Request, Depends
+from dotenv import load_dotenv
+from starlette.middleware.cors import CORSMiddleware
+from motor.motor_asyncio import AsyncIOMotorClient
+import os
+import logging
+import uuid
+import json
+import base64
+import io
+from pathlib import Path
+from pydantic import BaseModel, Field
+from typing import List, Optional
+from datetime import datetime, timezone, timedelta
+import jwt
+import bcrypt
+from PIL import Image
+import torch
+from transformers import CLIPModel, CLIPProcessor
+import numpy as np
+from sklearn.cluster import KMeans
+import requests
+
+ROOT_DIR = Path(__file__).parent
+load_dotenv(ROOT_DIR / '.env')
+
+# --- Model Initialization ---
+device = "cuda" if torch.cuda.is_available() else "cpu"
+model = CLIPModel.from_pretrained("patrickjohncyh/fashion-clip").to(device)
+processor = CLIPProcessor.from_pretrained("patrickjohncyh/fashion-clip")
+model.eval()
+
+# --- Fashion Constants ---
+TOPS = ["t-shirt", "shirt", "hoodie", "jacket"]
+BOTTOMS = ["jeans", "trousers", "shorts"]
+SHOES = ["shoes", "sneakers", "sandals"]
+ACCESSORIES = ["accessory"]
+DRESSES = ["dress"]
+
+CATEGORIES = TOPS + BOTTOMS + SHOES + ACCESSORIES + DRESSES
+COLORS = ["red", "blue", "black", "white", "green", "yellow", "grey", "brown", "pink", "multi-color"]
+STYLES = ["casual", "formal", "sporty", "streetwear", "party wear", "ethnic"]
+PATTERNS = ["plain", "striped", "checked", "floral", "printed"]
+
+COLOR_COMPATIBILITY = {
+    "black": ["white", "grey", "blue", "red", "yellow"],
+    "white": ["black", "blue", "red", "green", "grey"],
+    "blue": ["white", "black", "grey"],
+    "red": ["black", "white", "grey"],
+    "grey": ["black", "white", "blue", "red"],
+    "multi-color": ["white", "black"]
+}
+
+OCCASIONS = {
+    "formal": {"tops": ["shirt"], "bottoms": ["trousers"], "shoes": ["shoes"], "styles": ["formal"]},
+    "casual": {"tops": ["t-shirt", "hoodie"], "bottoms": ["jeans", "shorts"], "shoes": ["sneakers", "sandals"], "styles": ["casual", "streetwear"]},
+    "sporty": {"tops": ["t-shirt", "hoodie"], "bottoms": ["shorts", "trousers"], "shoes": ["sneakers"], "styles": ["sporty"]},
+}
+
+# MongoDB connection
+mongo_url = os.environ['MONGO_URL']
+client = AsyncIOMotorClient(mongo_url)
+db = client[os.environ['DB_NAME']]
+
+JWT_SECRET = os.environ.get('JWT_SECRET')
+JWT_ALGORITHM = "HS256"
+JWT_EXPIRY_HOURS = 168
+
+app = FastAPI()
+api_router = APIRouter(prefix="/api")
+
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
+
+# --- Models ---
+class UserRegister(BaseModel):
+    name: str
+    email: str
+    password: str
+
+class UserLogin(BaseModel):
+    email: str
+    password: str
+
+class GoogleAuthRequest(BaseModel):
+    session_id: str
+
+class WardrobeItemCreate(BaseModel):
+    image_base64: str
+    name: Optional[str] = None
+
+class WardrobeBatchAdd(BaseModel):
+    items: List[WardrobeItemCreate]
+
+class OutfitPredictRequest(BaseModel):
+    item_id: str
+    occasion: Optional[str] = None
+
+class OutfitSaveRequest(BaseModel):
+    top_id: Optional[str] = None
+    bottom_id: Optional[str] = None
+    shoes_id: Optional[str] = None
+    accessory_id: Optional[str] = None
+    compatibility_score: float
+    reason: Optional[str] = ""
+
+class WearOutfitRequest(BaseModel):
+    outfit_id: str
+
+class ProfileSetup(BaseModel):
+    gender: Optional[str] = None
+    age: Optional[int] = None
+    location: Optional[str] = None
+    dress_preference: Optional[str] = None
+    top_size: Optional[str] = None
+    bottom_size: Optional[str] = None
+    shoe_size: Optional[str] = None
+
+# --- Auth Helpers ---
+def hash_password(password: str) -> str:
+    return bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
+
+def verify_password(password: str, hashed: str) -> bool:
+    return bcrypt.checkpw(password.encode(), hashed.encode())
+
+def create_jwt(user_id: str) -> str:
+    payload = {
+        "user_id": user_id,
+        "exp": datetime.now(timezone.utc) + timedelta(hours=JWT_EXPIRY_HOURS)
+    }
+    return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
+
+async def get_current_user(request: Request) -> dict:
+    auth_header = request.headers.get("Authorization")
+    if not auth_header or not auth_header.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    token = auth_header.split(" ")[1]
+    # Try JWT
+    try:
+        payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+        user = await db.users.find_one({"user_id": payload["user_id"]}, {"_id": 0})
+        if user:
+            return user
+    except jwt.exceptions.PyJWTError:
+        pass
+    # Try session token
+    session = await db.user_sessions.find_one({"session_token": token}, {"_id": 0})
+    if session:
+        expires_at = session.get("expires_at")
+        if isinstance(expires_at, str):
+            expires_at = datetime.fromisoformat(expires_at)
+        if expires_at.tzinfo is None:
+            expires_at = expires_at.replace(tzinfo=timezone.utc)
+        if expires_at > datetime.now(timezone.utc):
+            user = await db.users.find_one({"user_id": session["user_id"]}, {"_id": 0})
+            if user:
+                return user
+    raise HTTPException(status_code=401, detail="Not authenticated")
+
+# --- Image Processing ---
+def clean_base64(data: str) -> str:
+    if ',' in data:
+        return data.split(',', 1)[1]
+    return data
+
+def process_image(image_base64: str) -> str:
+    try:
+        clean = clean_base64(image_base64)
+        image_data = base64.b64decode(clean)
+        image = Image.open(io.BytesIO(image_data))
+        max_size = 800
+        if max(image.size) > max_size:
+            ratio = max_size / max(image.size)
+            new_size = (int(image.size[0] * ratio), int(image.size[1] * ratio))
+            image = image.resize(new_size, Image.LANCZOS)
+        if image.mode in ('RGBA', 'P'):
+            image = image.convert('RGB')
+        buffer = io.BytesIO()
+        image.save(buffer, format='JPEG', quality=85)
+        return base64.b64encode(buffer.getvalue()).decode()
+    except Exception as e:
+        logger.error(f"Image processing error: {e}")
+        return clean_base64(image_base64)
+
+# --- AI Helpers ---
+def crop_center(image):
+    w, h = image.size
+    return image.crop((w*0.25, h*0.25, w*0.75, h*0.75))
+
+def map_rgb_to_color_name(r, g, b):
+    if r < 50 and g < 50 and b < 50:
+        return "black"
+    if r > 200 and g > 200 and b > 200:
+        return "white"
+    if r > 150 and g < 100 and b < 100:
+        return "red"
+    if b > 150 and r < 100:
+        return "blue"
+    if g > 150 and r < 100:
+        return "green"
+    if r > 150 and g > 150 and b < 100:
+        return "yellow"
+    if r > 150 and b > 150:
+        return "pink"
+    if r > 100 and g > 100 and b > 100:
+        return "grey"
+    return "multi-color"
+
+def extract_dominant_color(image):
+    try:
+        image = crop_center(image)
+        image = image.resize((100, 100))
+        img_array = np.array(image)
+        pixels = img_array.reshape((-1, 3))
+        
+        kmeans = KMeans(n_clusters=3, n_init=10)
+        kmeans.fit(pixels)
+        
+        counts = np.bincount(kmeans.labels_)
+        dominant = kmeans.cluster_centers_[counts.argmax()]
+        r, g, b = dominant.astype(int)
+        
+        return map_rgb_to_color_name(r, g, b)
+    except Exception as e:
+        logger.error(f"Color extraction error: {e}")
+        return "multi-color"
+
+def get_image_embedding(image):
+    with torch.no_grad():
+        inputs = processor(images=image, return_tensors="pt").to(device)
+        outputs = model.get_image_features(**inputs)
+        # Handle cases where the output might be an object instead of a tensor
+        if hasattr(outputs, "image_embeds"):
+            emb = outputs.image_embeds
+        elif hasattr(outputs, "pooler_output"):
+            emb = outputs.pooler_output
+        elif isinstance(outputs, torch.Tensor):
+            emb = outputs
+        else:
+            # Fallback for other output types
+            emb = outputs[0] if isinstance(outputs, (list, tuple)) else outputs
+            
+        emb = emb / emb.norm(p=2, dim=-1, keepdim=True)
+    return emb
+
+async def analyze_clothing_image(image_base64: str) -> dict:
+    try:
+        clean = clean_base64(image_base64)
+        image_data = base64.b64decode(clean)
+        image = Image.open(io.BytesIO(image_data))
+        if image.mode != 'RGB':
+            image = image.convert('RGB')
+        
+        results = {}
+        # Zero-shot CLIP for attributes
+        for label_set, key in [(CATEGORIES, "category"), (STYLES, "style"), (PATTERNS, "pattern")]:
+            prompts = [f"a photo of a {label} clothing" for label in label_set]
+            with torch.no_grad():
+                inputs = processor(text=prompts, images=image, return_tensors="pt", padding=True).to(device)
+                outputs = model(**inputs)
+                probs = outputs.logits_per_image.softmax(dim=1)
+                best_idx = probs.argmax().item()
+                results[key] = label_set[best_idx]
+        
+        # Dominant color extraction
+        results["color"] = extract_dominant_color(image)
+        results["name"] = f"{results['color'].capitalize()} {results['category'].capitalize()}"
+        return results
+    except Exception as e:
+        logger.error(f"AI analysis error: {e}")
+        return {
+            "category": "t-shirt",
+            "color": "black",
+            "style": "casual",
+            "pattern": "plain",
+            "name": "Clothing Item"
+        }
+
+async def generate_outfit_suggestions(wardrobe_items: list, selected_item: dict, occasion: str = None) -> list:
+    try:
+        # Pre-filter by category
+        selected_cat = selected_item["category"]
+        selected_emb = torch.tensor(selected_item["embedding"]).to(device) if "embedding" in selected_item else None
+        
+        # Matching targets based on selected category
+        tops, bottoms, shoes_list = [], [], []
+        
+        if selected_cat in TOPS:
+            tops = [selected_item]
+            bottoms = [i for i in wardrobe_items if i["category"] in BOTTOMS]
+            shoes_list = [i for i in wardrobe_items if i["category"] in SHOES]
+        elif selected_cat in BOTTOMS:
+            tops = [i for i in wardrobe_items if i["category"] in TOPS]
+            bottoms = [selected_item]
+            shoes_list = [i for i in wardrobe_items if i["category"] in SHOES]
+        elif selected_cat in SHOES:
+            tops = [i for i in wardrobe_items if i["category"] in TOPS]
+            bottoms = [i for i in wardrobe_items if i["category"] in BOTTOMS]
+            shoes_list = [selected_item]
+        elif selected_cat in DRESSES:
+            tops = [None]
+            bottoms = [None]
+            shoes_list = [i for i in wardrobe_items if i["category"] in SHOES]
+            # Dresses are a special case, but let's keep it simple
+            combinations = []
+            for s in (shoes_list if shoes_list else [None]):
+                score = 75.0
+                if s and "embedding" in s and "embedding" in selected_item:
+                    score = torch.nn.functional.cosine_similarity(
+                        torch.tensor(selected_item["embedding"]).to(device), 
+                        torch.tensor(s["embedding"]).to(device)
+                    ).item() * 100
+                combinations.append({
+                    "top_id": None, "bottom_id": None, "shoes_id": s["item_id"] if s else None,
+                    "accessory_id": None, "compatibility_score": min(100, max(0, score)),
+                    "reason": "FashionCLIP matching"
+                })
+            return combinations[:3]
+        else:
+            return []
+
+        # Generate combinations
+        combinations = []
+        for t in (tops if tops else [None]):
+            for b in (bottoms if bottoms else [None]):
+                for s in (shoes_list if shoes_list else [None]):
+                    items = [i for i in [t, b, s] if i]
+                    if len(items) < 2: continue
+                    
+                    # Embedding similarity
+                    sims = []
+                    for i in range(len(items)):
+                        for j in range(i + 1, len(items)):
+                            if "embedding" in items[i] and "embedding" in items[j]:
+                                e1 = torch.tensor(items[i]["embedding"]).to(device)
+                                e2 = torch.tensor(items[j]["embedding"]).to(device)
+                                sims.append(torch.nn.functional.cosine_similarity(e1, e2).item())
+                    
+                    emb_sim = sum(sims) / len(sims) if sims else 0.7
+                    
+                    # Color score
+                    color_match = 0
+                    if t and b:
+                        if b["color"] in COLOR_COMPATIBILITY.get(t["color"], []): color_match += 1
+                    if b and s:
+                        if s["color"] in COLOR_COMPATIBILITY.get(b["color"], []): color_match += 1
+                    color_score = (color_match / 2.0) if t and b and s else color_match
+                    
+                    # Style score
+                    style_match = 0
+                    styles_found = [i["style"] for i in items if i.get("style")]
+                    if len(set(styles_found)) == 1: style_match = 1.0
+                    elif len(set(styles_found)) <= 2: style_match = 0.5
+                    
+                    # Occasion boost
+                    occ_boost = 0
+                    if occasion and occasion in OCCASIONS:
+                        occ_rules = OCCASIONS[occasion]
+                        matches = 0
+                        for i in items:
+                            if i["category"] in occ_rules.get("tops", []) or \
+                               i["category"] in occ_rules.get("bottoms", []) or \
+                               i["category"] in occ_rules.get("shoes", []):
+                                matches += 1
+                        occ_boost = (matches / len(items)) * 15
+
+                    # Final Score
+                    final_score = (0.6 * emb_sim * 100) + (20 * color_score) + (20 * style_match) + occ_boost
+                    
+                    combinations.append({
+                        "top_id": t["item_id"] if t else None,
+                        "bottom_id": b["item_id"] if b else None,
+                        "shoes_id": s["item_id"] if s else None,
+                        "accessory_id": None,
+                        "compatibility_score": min(100, max(0, final_score)),
+                        "reason": f"Visual similarity with {occasion if occasion else 'casual'} style boost"
+                    })
+
+        combinations.sort(key=lambda x: x["compatibility_score"], reverse=True)
+        return combinations[:3]
+    except Exception as e:
+        logger.error(f"Outfit generation error: {e}")
+        return []
+
+async def generate_recommendations(wardrobe_items: list, user_profile: dict = None, category: str = None) -> list:
+    try:
+        # Fetch items from fake store
+        store_query = {}
+        if category and category != "All":
+            store_query["category"] = category
+        
+        store_items = await db.store_items.find(store_query, {"_id": 0}).to_list(100)
+        if not store_items: return []
+        
+        # Simple preference matching
+        user_styles = [i.get("style") for i in wardrobe_items if i.get("style")]
+        fav_style = max(set(user_styles), key=user_styles.count) if user_styles else "casual"
+        
+        # Rank store items
+        recommendations = []
+        for s_item in store_items:
+            score = 70
+            if s_item.get("style") == fav_style: score += 15
+            
+            recommendations.append({
+                "name": s_item["name"],
+                "category": s_item["category"],
+                "color": s_item["color"],
+                "price": f"₹{s_item['price']}",
+                "price_value": s_item["price"],
+                "store": "Fashion AI Store",
+                "search_url": s_item.get("image_url", ""),
+                "match_score": score,
+                "wardrobe_match": f"Matches your {fav_style} style"
+            })
+            
+        recommendations.sort(key=lambda x: x["match_score"], reverse=True)
+        return recommendations[:8]
+    except Exception as e:
+        logger.error(f"Recommendation error: {e}")
+        return []
+
+# --- Auth Routes ---
+@api_router.post("/auth/register")
+async def register(data: UserRegister):
+    existing = await db.users.find_one({"email": data.email})
+    if existing:
+        raise HTTPException(status_code=400, detail="Email already registered")
+    user_id = f"user_{uuid.uuid4().hex[:12]}"
+    user = {
+        "user_id": user_id,
+        "name": data.name,
+        "email": data.email,
+        "password": hash_password(data.password),
+        "profile_image": None,
+        "gender": None,
+        "age": None,
+        "location": None,
+        "dress_preference": None,
+        "top_size": None,
+        "bottom_size": None,
+        "shoe_size": None,
+        "profile_complete": False,
+        "created_at": datetime.now(timezone.utc).isoformat()
+    }
+    await db.users.insert_one(user)
+    token = create_jwt(user_id)
+    return {"token": token, "user": {"user_id": user_id, "name": data.name, "email": data.email, "profile_image": None, "profile_complete": False}}
+
+@api_router.post("/auth/login")
+async def login(data: UserLogin):
+    user = await db.users.find_one({"email": data.email}, {"_id": 0})
+    if not user or not user.get("password") or not verify_password(data.password, user["password"]):
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+    token = create_jwt(user["user_id"])
+    return {"token": token, "user": {"user_id": user["user_id"], "name": user["name"], "email": user["email"], "profile_image": user.get("profile_image"), "profile_complete": user.get("profile_complete", False)}}
+
+@api_router.post("/auth/google")
+async def google_auth(data: GoogleAuthRequest):
+    resp = requests.get(
+        "https://demobackend.emergentagent.com/auth/v1/env/oauth/session-data",
+        headers={"X-Session-ID": data.session_id}
+    )
+    if resp.status_code != 200:
+        raise HTTPException(status_code=401, detail="Invalid Google session")
+    auth_data = resp.json()
+    email = auth_data["email"]
+    existing = await db.users.find_one({"email": email}, {"_id": 0})
+    if existing:
+        user_id = existing["user_id"]
+        await db.users.update_one(
+            {"user_id": user_id},
+            {"$set": {"name": auth_data["name"], "profile_image": auth_data.get("picture")}}
+        )
+    else:
+        user_id = f"user_{uuid.uuid4().hex[:12]}"
+        await db.users.insert_one({
+            "user_id": user_id,
+            "name": auth_data["name"],
+            "email": email,
+            "password": "",
+            "profile_image": auth_data.get("picture"),
+            "created_at": datetime.now(timezone.utc).isoformat()
+        })
+    session_token = f"session_{uuid.uuid4().hex}"
+    await db.user_sessions.insert_one({
+        "user_id": user_id,
+        "session_token": session_token,
+        "expires_at": (datetime.now(timezone.utc) + timedelta(days=7)).isoformat(),
+        "created_at": datetime.now(timezone.utc).isoformat()
+    })
+    token = create_jwt(user_id)
+    existing_user = await db.users.find_one({"user_id": user_id}, {"_id": 0})
+    pc = existing_user.get("profile_complete", False) if existing_user else False
+    return {"token": token, "user": {"user_id": user_id, "name": auth_data["name"], "email": email, "profile_image": auth_data.get("picture"), "profile_complete": pc}}
+
+@api_router.get("/auth/me")
+async def get_me(user: dict = Depends(get_current_user)):
+    return {
+        "user_id": user["user_id"], "name": user["name"], "email": user["email"],
+        "profile_image": user.get("profile_image"), "gender": user.get("gender"),
+        "age": user.get("age"), "location": user.get("location"),
+        "dress_preference": user.get("dress_preference"), "top_size": user.get("top_size"),
+        "bottom_size": user.get("bottom_size"), "shoe_size": user.get("shoe_size"),
+        "profile_complete": user.get("profile_complete", False),
+    }
+
+@api_router.post("/auth/logout")
+async def logout(user: dict = Depends(get_current_user)):
+    await db.user_sessions.delete_many({"user_id": user["user_id"]})
+    return {"status": "logged out"}
+
+# --- Profile Routes ---
+@api_router.put("/profile/setup")
+async def setup_profile(data: ProfileSetup, user: dict = Depends(get_current_user)):
+    update_data = {}
+    if data.gender is not None:
+        update_data["gender"] = data.gender
+    if data.age is not None:
+        update_data["age"] = data.age
+    if data.location is not None:
+        update_data["location"] = data.location
+    if data.dress_preference is not None:
+        update_data["dress_preference"] = data.dress_preference
+    if data.top_size is not None:
+        update_data["top_size"] = data.top_size
+    if data.bottom_size is not None:
+        update_data["bottom_size"] = data.bottom_size
+    if data.shoe_size is not None:
+        update_data["shoe_size"] = data.shoe_size
+    update_data["profile_complete"] = True
+    await db.users.update_one({"user_id": user["user_id"]}, {"$set": update_data})
+    updated = await db.users.find_one({"user_id": user["user_id"]}, {"_id": 0, "password": 0})
+    return updated
+
+@api_router.get("/profile")
+async def get_profile(user: dict = Depends(get_current_user)):
+    profile = await db.users.find_one({"user_id": user["user_id"]}, {"_id": 0, "password": 0})
+    if not profile:
+        raise HTTPException(status_code=404, detail="Profile not found")
+    return profile
+
+# --- Wardrobe Routes ---
+@api_router.get("/wardrobe")
+async def get_wardrobe(user: dict = Depends(get_current_user), category: Optional[str] = None, search: Optional[str] = None, sort: Optional[str] = None):
+    query = {"user_id": user["user_id"]}
+    if category and category != "All":
+        query["category"] = category
+    if search:
+        query["name"] = {"$regex": search, "$options": "i"}
+    sort_field = "created_at"
+    sort_dir = -1
+    if sort == "most_worn":
+        sort_field = "wear_count"
+        sort_dir = -1
+    elif sort == "least_worn":
+        sort_field = "wear_count"
+        sort_dir = 1
+    items = await db.wardrobe_items.find(query, {"_id": 0}).sort(sort_field, sort_dir).to_list(200)
+    return {"items": items}
+
+@api_router.post("/wardrobe/add")
+async def add_wardrobe_item(data: WardrobeItemCreate, user: dict = Depends(get_current_user)):
+    processed_image_b64 = process_image(data.image_base64)
+    attributes = await analyze_clothing_image(processed_image_b64)
+    
+    # Generate embedding
+    image_data = base64.b64decode(processed_image_b64)
+    image = Image.open(io.BytesIO(image_data)).convert('RGB')
+    embedding = get_image_embedding(image).cpu().numpy().tolist()[0]
+    
+    item_id = f"item_{uuid.uuid4().hex[:12]}"
+    item = {
+        "item_id": item_id,
+        "user_id": user["user_id"],
+        "image_base64": processed_image_b64,
+        "name": data.name or attributes.get("name", "Clothing Item"),
+        "category": attributes.get("category", "Tops"),
+        "color": attributes.get("color", "Unknown"),
+        "texture": attributes.get("texture", "Unknown"),
+        "style": attributes.get("style", "Casual"),
+        "pattern": attributes.get("pattern", "plain"),
+        "embedding": embedding,
+        "wear_count": 0,
+        "created_at": datetime.now(timezone.utc).isoformat()
+    }
+    await db.wardrobe_items.insert_one(item)
+    item.pop("_id", None)
+    item.pop("embedding", None)
+    return item
+
+@api_router.post("/wardrobe/batch-add")
+async def batch_add_wardrobe_items(data: WardrobeBatchAdd, user: dict = Depends(get_current_user)):
+    results = []
+    for item_data in data.items:
+        try:
+            processed_image_b64 = process_image(item_data.image_base64)
+            attributes = await analyze_clothing_image(processed_image_b64)
+            
+            image_data = base64.b64decode(processed_image_b64)
+            image = Image.open(io.BytesIO(image_data)).convert('RGB')
+            embedding = get_image_embedding(image).cpu().numpy().tolist()[0]
+            
+            item_id = f"item_{uuid.uuid4().hex[:12]}"
+            item = {
+                "item_id": item_id,
+                "user_id": user["user_id"],
+                "image_base64": processed_image_b64,
+                "name": item_data.name or attributes.get("name", "Clothing Item"),
+                "category": attributes.get("category", "Tops"),
+                "color": attributes.get("color", "Unknown"),
+                "texture": attributes.get("texture", "Unknown"),
+                "style": attributes.get("style", "Casual"),
+                "pattern": attributes.get("pattern", "plain"),
+                "embedding": embedding,
+                "wear_count": 0,
+                "created_at": datetime.now(timezone.utc).isoformat()
+            }
+            await db.wardrobe_items.insert_one(item)
+            item.pop("_id", None)
+            item.pop("embedding", None)
+            results.append(item)
+        except Exception as e:
+            logger.error(f"Batch add error for item: {e}")
+            continue
+    return {"items": results}
+
+@api_router.get("/wardrobe/{item_id}")
+async def get_wardrobe_item(item_id: str, user: dict = Depends(get_current_user)):
+    item = await db.wardrobe_items.find_one({"item_id": item_id, "user_id": user["user_id"]}, {"_id": 0})
+    if not item:
+        raise HTTPException(status_code=404, detail="Item not found")
+    return item
+
+@api_router.delete("/wardrobe/{item_id}")
+async def delete_wardrobe_item(item_id: str, user: dict = Depends(get_current_user)):
+    result = await db.wardrobe_items.delete_one({"item_id": item_id, "user_id": user["user_id"]})
+    if result.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Item not found")
+    return {"status": "deleted"}
+
+# --- Outfit Routes ---
+@api_router.post("/outfit/predict")
+async def predict_outfit(data: OutfitPredictRequest, user: dict = Depends(get_current_user)):
+    selected = await db.wardrobe_items.find_one({"item_id": data.item_id, "user_id": user["user_id"]}, {"_id": 0})
+    if not selected:
+        raise HTTPException(status_code=404, detail="Item not found")
+    
+    all_items = await db.wardrobe_items.find({"user_id": user["user_id"]}, {"_id": 0}).to_list(100)
+    
+    # Fallback to store items if wardrobe is small
+    if len(all_items) < 3:
+        store_items = await db.store_items.find({"category": {"$in": CATEGORIES}}, {"_id": 0}).to_list(20)
+        # Add store items to context for matching
+        for s in store_items:
+            s["item_id"] = s["product_id"] # map field name
+        all_items.extend(store_items)
+
+    suggestions = await generate_outfit_suggestions(all_items, selected, occasion=data.occasion)
+    
+    items_map = {i.get("item_id") or i.get("product_id"): i for i in all_items}
+    enriched = []
+    for s in suggestions:
+        outfit = {
+            "outfit_id": f"outfit_{uuid.uuid4().hex[:12]}",
+            "top": items_map.get(s.get("top_id")),
+            "bottom": items_map.get(s.get("bottom_id")),
+            "shoes": items_map.get(s.get("shoes_id")),
+            "accessory": items_map.get(s.get("accessory_id")),
+            "compatibility_score": s.get("compatibility_score", 80),
+            "reason": s.get("reason", "Great combination!")
+        }
+        enriched.append(outfit)
+    return {"outfits": enriched}
+
+@api_router.post("/outfit/save")
+async def save_outfit(data: OutfitSaveRequest, user: dict = Depends(get_current_user)):
+    outfit_id = f"outfit_{uuid.uuid4().hex[:12]}"
+    outfit = {
+        "outfit_id": outfit_id,
+        "user_id": user["user_id"],
+        "top_id": data.top_id,
+        "bottom_id": data.bottom_id,
+        "shoes_id": data.shoes_id,
+        "accessory_id": data.accessory_id,
+        "compatibility_score": data.compatibility_score,
+        "reason": data.reason,
+        "created_at": datetime.now(timezone.utc).isoformat()
+    }
+    await db.outfits.insert_one(outfit)
+    outfit.pop("_id", None)
+    return outfit
+
+@api_router.post("/outfit/wear")
+async def wear_outfit(data: WearOutfitRequest, user: dict = Depends(get_current_user)):
+    history = {
+        "history_id": f"hist_{uuid.uuid4().hex[:12]}",
+        "user_id": user["user_id"],
+        "outfit_id": data.outfit_id,
+        "worn_date": datetime.now(timezone.utc).isoformat()
+    }
+    await db.outfit_history.insert_one(history)
+    outfit = await db.outfits.find_one({"outfit_id": data.outfit_id}, {"_id": 0})
+    if outfit:
+        for field in ["top_id", "bottom_id", "shoes_id", "accessory_id"]:
+            if outfit.get(field):
+                await db.wardrobe_items.update_one({"item_id": outfit[field]}, {"$inc": {"wear_count": 1}})
+    history.pop("_id", None)
+    return history
+
+@api_router.get("/outfit/history")
+async def get_outfit_history(user: dict = Depends(get_current_user)):
+    history = await db.outfit_history.find({"user_id": user["user_id"]}, {"_id": 0}).sort("worn_date", -1).to_list(50)
+    for h in history:
+        outfit = await db.outfits.find_one({"outfit_id": h["outfit_id"]}, {"_id": 0})
+        if outfit:
+            for field in ["top_id", "bottom_id", "shoes_id", "accessory_id"]:
+                if outfit.get(field):
+                    item = await db.wardrobe_items.find_one({"item_id": outfit[field]}, {"_id": 0, "image_base64": 0})
+                    h[field.replace("_id", "")] = item
+            h["compatibility_score"] = outfit.get("compatibility_score")
+            h["reason"] = outfit.get("reason")
+    return {"history": history}
+
+@api_router.get("/outfit/saved")
+async def get_saved_outfits(user: dict = Depends(get_current_user)):
+    outfits = await db.outfits.find({"user_id": user["user_id"]}, {"_id": 0}).sort("created_at", -1).to_list(50)
+    all_items = await db.wardrobe_items.find({"user_id": user["user_id"]}, {"_id": 0}).to_list(200)
+    items_map = {i["item_id"]: i for i in all_items}
+    enriched = []
+    for o in outfits:
+        enriched.append({
+            "outfit_id": o["outfit_id"],
+            "top": items_map.get(o.get("top_id")),
+            "bottom": items_map.get(o.get("bottom_id")),
+            "shoes": items_map.get(o.get("shoes_id")),
+            "accessory": items_map.get(o.get("accessory_id")),
+            "compatibility_score": o.get("compatibility_score"),
+            "reason": o.get("reason"),
+            "created_at": o.get("created_at")
+        })
+    return {"outfits": enriched}
+
+# --- Recommendations ---
+@api_router.get("/recommendations")
+async def get_recommendations(
+    user: dict = Depends(get_current_user),
+    price_range: Optional[str] = None,
+    platform: Optional[str] = None,
+    category: Optional[str] = None
+):
+    items = await db.wardrobe_items.find({"user_id": user["user_id"]}, {"_id": 0, "image_base64": 0}).to_list(50)
+    if not items:
+        return {"recommendations": []}
+    # Build user profile from DB
+    user_profile = {
+        "gender": user.get("gender"),
+        "age": user.get("age"),
+        "location": user.get("location"),
+        "dress_preference": user.get("dress_preference"),
+        "top_size": user.get("top_size"),
+        "bottom_size": user.get("bottom_size"),
+        "shoe_size": user.get("shoe_size"),
+    }
+    recs = await generate_recommendations(items, user_profile=user_profile, price_range=price_range, platform=platform, category=category)
+    return {"recommendations": recs}
+
+# --- Analytics ---
+@api_router.get("/analytics")
+async def get_analytics(user: dict = Depends(get_current_user)):
+    items = await db.wardrobe_items.find({"user_id": user["user_id"]}, {"_id": 0, "image_base64": 0}).to_list(200)
+    total_items = len(items)
+    total_outfits = await db.outfits.count_documents({"user_id": user["user_id"]})
+    total_worn = await db.outfit_history.count_documents({"user_id": user["user_id"]})
+    categories = {}
+    colors = {}
+    styles = {}
+    most_worn = None
+    least_worn = None
+    for item in items:
+        cat = item.get("category", "Other")
+        categories[cat] = categories.get(cat, 0) + 1
+        color = item.get("color", "Unknown")
+        colors[color] = colors.get(color, 0) + 1
+        style = item.get("style", "Unknown")
+        styles[style] = styles.get(style, 0) + 1
+        wear = item.get("wear_count", 0)
+        if most_worn is None or wear > most_worn.get("wear_count", 0):
+            most_worn = item
+        if least_worn is None or wear < least_worn.get("wear_count", 0):
+            least_worn = item
+    return {
+        "total_items": total_items,
+        "total_outfits": total_outfits,
+        "total_worn": total_worn,
+        "categories": categories,
+        "colors": colors,
+        "styles": styles,
+        "most_worn": most_worn,
+        "least_worn": least_worn
+    }
+
+# Include router
+app.include_router(api_router)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_credentials=True,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+@app.on_event("shutdown")
+async def shutdown_db_client():
+    client.close()

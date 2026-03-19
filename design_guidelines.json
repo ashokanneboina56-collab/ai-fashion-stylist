@@ -1,0 +1,226 @@
+{
+  "app_name": "AI Fashion Designer",
+  "platform": "React Native (Expo)",
+  "theme_mode": "dark",
+  "design_philosophy": {
+    "core_principle": "Digital Haute Couture",
+    "description": "The app should feel like a private fitting room in a luxury boutique. Dark, mysterious, but sharply functional. Use negative space to frame clothing like art pieces.",
+    "rules": [
+      "No default React Native buttons. Custom touchables only.",
+      "No system alerts. Use custom modal overlays.",
+      "Images must have 'hero' status. High quality, full width where possible.",
+      "Typography is the primary decoration. Contrast Serif headings with Sans body."
+    ]
+  },
+  "typography": {
+    "font_families": {
+      "heading": "PlayfairDisplay_700Bold",
+      "body": "Lato_400Regular",
+      "body_bold": "Lato_700Bold",
+      "monospace": "Courier New"
+    },
+    "installation_guide": "Install @expo-google-fonts/playfair-display and @expo-google-fonts/lato. Load in _layout.tsx using useFonts hook.",
+    "sizes": {
+      "display": 48,
+      "h1": 32,
+      "h2": 24,
+      "h3": 20,
+      "body_lg": 16,
+      "body_md": 14,
+      "caption": 12,
+      "tiny": 10
+    },
+    "line_heights": {
+      "tight": 1.1,
+      "normal": 1.5,
+      "relaxed": 1.8
+    }
+  },
+  "colors": {
+    "palette": {
+      "primary": "#FFFFFF",
+      "on_primary": "#000000",
+      "secondary": "#D4AF37",
+      "background": "#050505",
+      "surface": "#121212",
+      "surface_highlight": "#1E1E1E",
+      "text_primary": "#FFFFFF",
+      "text_secondary": "#A0A0A0",
+      "text_tertiary": "#505050",
+      "border": "#2A2A2A",
+      "border_focus": "#D4AF37",
+      "error": "#CF6679",
+      "success": "#03DAC6",
+      "overlay": "rgba(0,0,0,0.8)"
+    },
+    "gradients": {
+      "gold_rush": ["#D4AF37", "#C5A028"],
+      "dark_fade": ["transparent", "#050505"],
+      "image_overlay": ["rgba(0,0,0,0)", "rgba(0,0,0,0.6)", "rgba(0,0,0,0.9)"]
+    }
+  },
+  "spacing": {
+    "xs": 4,
+    "sm": 8,
+    "md": 16,
+    "lg": 24,
+    "xl": 32,
+    "xxl": 48,
+    "screen_padding": 20,
+    "safe_area_bottom": 34
+  },
+  "borders": {
+    "radius": {
+      "sm": 4,
+      "md": 12,
+      "lg": 24,
+      "xl": 32,
+      "full": 9999
+    },
+    "width": {
+      "thin": 0.5,
+      "standard": 1,
+      "thick": 2
+    }
+  },
+  "shadows": {
+    "soft": {
+      "shadowColor": "#000",
+      "shadowOffset": { "width": 0, "height": 4 },
+      "shadowOpacity": 0.3,
+      "shadowRadius": 4.65,
+      "elevation": 8
+    },
+    "glow": {
+      "shadowColor": "#D4AF37",
+      "shadowOffset": { "width": 0, "height": 0 },
+      "shadowOpacity": 0.4,
+      "shadowRadius": 10,
+      "elevation": 10
+    }
+  },
+  "layout_patterns": {
+    "safe_area_wrapper": {
+      "flex": 1,
+      "backgroundColor": "#050505"
+    },
+    "container": {
+      "flex": 1,
+      "paddingHorizontal": 20
+    },
+    "row_between": {
+      "flexDirection": "row",
+      "justifyContent": "space-between",
+      "alignItems": "center"
+    },
+    "centered": {
+      "flex": 1,
+      "justifyContent": "center",
+      "alignItems": "center"
+    }
+  },
+  "components": {
+    "Button": {
+      "primary": {
+        "backgroundColor": "#FFFFFF",
+        "borderRadius": 9999,
+        "paddingVertical": 16,
+        "alignItems": "center"
+      },
+      "primary_text": {
+        "color": "#000000",
+        "fontFamily": "Lato_700Bold",
+        "fontSize": 16,
+        "letterSpacing": 1
+      },
+      "outline": {
+        "backgroundColor": "transparent",
+        "borderWidth": 1,
+        "borderColor": "#FFFFFF",
+        "borderRadius": 9999,
+        "paddingVertical": 16,
+        "alignItems": "center"
+      }
+    },
+    "Card": {
+      "container": {
+        "backgroundColor": "#121212",
+        "borderRadius": 12,
+        "padding": 16,
+        "borderWidth": 0.5,
+        "borderColor": "#2A2A2A"
+      }
+    },
+    "Input": {
+      "container": {
+        "backgroundColor": "#1E1E1E",
+        "borderRadius": 8,
+        "paddingHorizontal": 16,
+        "paddingVertical": 14,
+        "borderWidth": 1,
+        "borderColor": "#2A2A2A",
+        "color": "#FFFFFF",
+        "fontFamily": "Lato_400Regular"
+      }
+    }
+  },
+  "assets": {
+    "images": {
+      "hero_splash": "https://images.unsplash.com/photo-1741514374662-a597fe342fea?crop=entropy&cs=srgb&fm=jpg&q=85",
+      "auth_background": "https://images.pexels.com/photos/8007354/pexels-photo-8007354.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940",
+      "wardrobe_items": [
+        {
+          "url": "https://images.unsplash.com/photo-1624222244232-5f1ae13bbd53?crop=entropy&cs=srgb&fm=jpg&q=85",
+          "category": "Tops",
+          "name": "White Linen Shirt"
+        },
+        {
+          "url": "https://images.unsplash.com/photo-1587375027707-6aeb5230fe3b?crop=entropy&cs=srgb&fm=jpg&q=85",
+          "category": "Tops",
+          "name": "Classic Blue Polo"
+        }
+      ],
+      "outfits": [
+        {
+          "url": "https://images.unsplash.com/photo-1704915066475-79cd1c8f4b6c?crop=entropy&cs=srgb&fm=jpg&q=85",
+          "style": "Street Chic"
+        },
+        {
+          "url": "https://images.unsplash.com/photo-1730177202748-5055c2a85222?crop=entropy&cs=srgb&fm=jpg&q=85",
+          "style": "Formal Business"
+        }
+      ]
+    },
+    "icons": {
+      "library": "@expo/vector-icons",
+      "mapping": {
+        "wardrobe": { "set": "Ionicons", "name": "shirt-outline" },
+        "outfits": { "set": "MaterialCommunityIcons", "name": "hanger" },
+        "add": { "set": "Feather", "name": "plus-circle" },
+        "profile": { "set": "Feather", "name": "user" },
+        "magic": { "set": "FontAwesome5", "name": "magic" },
+        "back": { "set": "Feather", "name": "arrow-left" },
+        "search": { "set": "Feather", "name": "search" },
+        "filter": { "set": "Feather", "name": "sliders" }
+      }
+    }
+  },
+  "instructions_to_main_agent": [
+    "CRITICAL: This is a React Native Expo project. DO NOT use HTML tags (div, span, p) or CSS classes.",
+    "Use 'StyleSheet.create' for all styles.",
+    "Use 'SafeAreaView' from 'react-native-safe-area-context' to wrap screens.",
+    "Use 'Expo Image' (<Image /> from 'expo-image') for caching and performance.",
+    "Implement 'Glassmorphism' using 'BlurView' from 'expo-blur' with intensity={20} and tint='dark'.",
+    "For the 'Wardrobe Grid', use a FlatList with numColumns={2} and columnWrapperStyle.",
+    "For 'Outfit Suggestions', implement a horizontal ScrollView or a deck swiper logic.",
+    "Ensure 'Touchable' areas are at least 44x44px.",
+    "Use the color palette strictly. Background must be #050505, not #000000, to reduce OLED smearing.",
+    "Load fonts asynchronously in the root _layout.tsx. Prevent rendering until fonts are loaded.",
+    "Add 'data-testid' props to all TouchableOpacity and TextInput components for testing."
+  ],
+  "accessibility": {
+    "contrast_check": "Ensure text is #FFFFFF on dark backgrounds and #000000 on light buttons.",
+    "touch_targets": "Minimum 44x44 points.",
+    "screen_readers": "All images must have an 'accessibilityLabel' prop."
+  }
+}
