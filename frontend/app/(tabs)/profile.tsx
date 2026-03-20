@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import {
   View, Text, TouchableOpacity, StyleSheet, ScrollView,
-  ActivityIndicator, Alert, Image,
+  ActivityIndicator, Alert, Image, Platform,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
@@ -17,10 +17,15 @@ export default function ProfileScreen() {
   const [outfitHistory, setOutfitHistory] = useState<any[]>([]);
   const [loadingHistory, setLoadingHistory] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
+  
+  const [savedOutfits, setSavedOutfits] = useState<any[]>([]);
+  const [loadingSaved, setLoadingSaved] = useState(false);
+  const [showSaved, setShowSaved] = useState(false);
 
   const fetchHistory = async () => {
     if (showHistory) { setShowHistory(false); return; }
     setShowHistory(true);
+    setShowSaved(false);
     setLoadingHistory(true);
     try {
       const data = await apiCall('/outfit/history');
@@ -32,11 +37,61 @@ export default function ProfileScreen() {
     }
   };
 
-  const handleLogout = () => {
-    Alert.alert('Logout', 'Are you sure you want to log out?', [
-      { text: 'Cancel', style: 'cancel' },
-      { text: 'Logout', style: 'destructive', onPress: async () => { await logout(); router.replace('/(auth)/login'); } },
-    ]);
+  const fetchSavedOutfits = async () => {
+    if (showSaved) { setShowSaved(false); return; }
+    setShowSaved(true);
+    setShowHistory(false);
+    setLoadingSaved(true);
+    try {
+      const data = await apiCall('/outfit/saved');
+      setSavedOutfits(data.outfits || []);
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setLoadingSaved(false);
+    }
+  };
+
+  const handleLogout = async () => {
+    // In web, Alert.alert can be problematic sometimes, so we can use a simpler approach
+    // but standard React Native Alert.alert is usually fine with shim
+    const confirmLogout = () => {
+      Alert.alert('Logout', 'Are you sure you want to log out?', [
+        { text: 'Cancel', style: 'cancel' },
+        { 
+          text: 'Logout', 
+          style: 'destructive', 
+          onPress: async () => { 
+            try {
+              // Call API first while we still have the token
+              await apiCall('/auth/logout', { method: 'POST' });
+            } catch (e) {
+              console.error('Logout API failed:', e);
+            } finally {
+              // Always clear local state and redirect
+              await logout(); 
+              // Using replace to root to trigger index.tsx logic or just go to login
+              router.replace('/(auth)/login'); 
+            }
+          } 
+        },
+      ]);
+    };
+
+    if (Platform.OS === 'web') {
+      if (window.confirm('Are you sure you want to log out?')) {
+        try {
+          await apiCall('/auth/logout', { method: 'POST' });
+        } catch (e) {
+          console.error('Logout API failed:', e);
+        } finally {
+          await logout(); 
+          router.replace('/(auth)/login'); 
+        }
+      }
+    } else {
+      confirmLogout();
+    }
   };
 
   const profileInfoItems = [
@@ -142,7 +197,7 @@ export default function ProfileScreen() {
             </View>
           )}
 
-          <TouchableOpacity testID="saved-outfits-btn" style={styles.menuItem} onPress={() => {}}>
+          <TouchableOpacity testID="saved-outfits-btn" style={styles.menuItem} onPress={fetchSavedOutfits}>
             <View style={styles.menuIcon}>
               <Feather name="bookmark" size={20} color={Colors.secondary} />
             </View>
@@ -150,8 +205,32 @@ export default function ProfileScreen() {
               <Text style={styles.menuText}>Saved Outfits</Text>
               <Text style={styles.menuSubtext}>Your saved outfit combos</Text>
             </View>
-            <Feather name="chevron-right" size={20} color={Colors.textTertiary} />
+            <Feather name={showSaved ? 'chevron-up' : 'chevron-right'} size={20} color={Colors.textTertiary} />
           </TouchableOpacity>
+
+          {showSaved && (
+            <View style={styles.expandedSection}>
+              {loadingSaved ? (
+                <ActivityIndicator size="small" color={Colors.secondary} style={{ padding: Spacing.lg }} />
+              ) : savedOutfits.length === 0 ? (
+                <Text style={styles.emptyText}>No saved outfits yet. Save your favorite combos from the Stylist tab!</Text>
+              ) : (
+                savedOutfits.map((o, index) => (
+                  <Animated.View key={o.outfit_id || index} entering={FadeInUp.delay(index * 100)} style={styles.historyCard}>
+                    <View style={styles.historyItems}>
+                      {o.top && <Text style={styles.historyItem}>Top: {o.top.name}</Text>}
+                      {o.bottom && <Text style={styles.historyItem}>Bottom: {o.bottom.name}</Text>}
+                      {o.shoes && <Text style={styles.historyItem}>Shoes: {o.shoes.name}</Text>}
+                      {o.accessory && <Text style={styles.historyItem}>Accessory: {o.accessory.name}</Text>}
+                    </View>
+                    {o.compatibility_score && (
+                      <Text style={styles.historyScore}>Match: {o.compatibility_score}%</Text>
+                    )}
+                  </Animated.View>
+                ))
+              )}
+            </View>
+          )}
         </View>
 
         <TouchableOpacity testID="logout-btn" style={styles.logoutBtn} onPress={handleLogout}>

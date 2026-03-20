@@ -1,4 +1,5 @@
 from fastapi import FastAPI, APIRouter, HTTPException, Request, Depends
+from fastapi.staticfiles import StaticFiles
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -433,12 +434,41 @@ async def generate_recommendations(wardrobe_items: list, user_profile: dict = No
     try:
         # Fetch items from fake store
         store_query = {}
+        
+        # Category Mapping (STRICT)
+        TOPS = ["t-shirt", "shirt", "hoodie", "jacket"]
+        BOTTOMS = ["jeans", "trousers", "shorts"]
+        SHOES = ["shoes", "sneakers", "sandals"]
+        ACCESSORIES = ["accessory", "belt", "bracelet", "watch"]
+
         if category and category != "All":
-            store_query["category"] = category
+            cat_lower = category.lower()
+            if cat_lower == "tops":
+                store_query["category"] = {"$in": TOPS}
+            elif cat_lower == "bottoms":
+                store_query["category"] = {"$in": BOTTOMS}
+            elif cat_lower == "shoes":
+                store_query["category"] = {"$in": SHOES}
+            elif cat_lower == "accessories":
+                store_query["category"] = {"$in": ACCESSORIES}
+            else:
+                store_query["category"] = cat_lower
         
         # Add basic platform filtering if provided
         if platform and platform != "All":
             store_query["store"] = platform
+            
+        # Price range filtering
+        if price_range and price_range != "All":
+            if "Under" in price_range:
+                store_query["price"] = {"$lt": int(price_range.split("₹")[1])}
+            elif "-" in price_range:
+                parts = price_range.split("-")
+                low = int(parts[0].split("₹")[1])
+                high = int(parts[1].split("₹")[1])
+                store_query["price"] = {"$gte": low, "$lte": high}
+            elif "Above" in price_range:
+                store_query["price"] = {"$gt": int(price_range.split("₹")[1])}
         
         store_items = await db.store_items.find(store_query, {"_id": 0}).to_list(100)
         if not store_items: return []
@@ -472,19 +502,20 @@ async def generate_recommendations(wardrobe_items: list, user_profile: dict = No
                 score += (sim * 30) # Weights embedding similarity at 30% of base ranking
             
             recommendations.append({
+                "product_id": s_item.get("product_id"),
                 "name": s_item["name"],
                 "category": s_item["category"],
                 "color": s_item["color"],
                 "price": f"₹{s_item['price']}",
                 "price_value": s_item["price"],
-                "store": "Fashion AI Store",
+                "store": s_item.get("store", "Fashion AI Store"),
                 "search_url": s_item.get("image_url", ""),
-                "match_score": min(100, score),
+                "match_score": min(100, int(score)),
                 "wardrobe_match": f"Matches your {fav_style} style"
             })
             
         recommendations.sort(key=lambda x: x["match_score"], reverse=True)
-        return recommendations[:8]
+        return recommendations[:50] # Show more items in the grid
     except Exception as e:
         logger.error(f"Recommendation error: {e}")
         return []
@@ -492,15 +523,31 @@ async def generate_recommendations(wardrobe_items: list, user_profile: dict = No
 # --- Auth Routes ---
 @api_router.post("/auth/register")
 async def register(data: UserRegister):
-    existing = await db.users.find_one({"email": data.email})
-    if existing:
+    print(f"DEBUG: Registering user: {data.email}")
+    existing_user = await db.users.find_one({"email": data.email})
+    existing_cred = await db.credentials.find_one({"email": data.email})
+    
+    if existing_user or existing_cred:
+        print(f"DEBUG: Email already registered: {data.email}")
         raise HTTPException(status_code=400, detail="Email already registered")
+    
     user_id = f"user_{uuid.uuid4().hex[:12]}"
+    hashed_password = hash_password(data.password)
+    timestamp = datetime.now(timezone.utc).isoformat()
+    
+    # Store credentials in dedicated collection
+    await db.credentials.insert_one({
+        "user_id": user_id,
+        "email": data.email,
+        "password": hashed_password,
+        "created_at": timestamp
+    })
+    
+    # Store profile in users collection (no password)
     user = {
         "user_id": user_id,
         "name": data.name,
         "email": data.email,
-        "password": hash_password(data.password),
         "profile_image": None,
         "gender": None,
         "age": None,
@@ -510,19 +557,51 @@ async def register(data: UserRegister):
         "bottom_size": None,
         "shoe_size": None,
         "profile_complete": False,
-        "created_at": datetime.now(timezone.utc).isoformat()
+        "created_at": timestamp
     }
     await db.users.insert_one(user)
+    
+    print(f"DEBUG: User registered successfully: {user_id}")
     token = create_jwt(user_id)
     return {"token": token, "user": {"user_id": user_id, "name": data.name, "email": data.email, "profile_image": None, "profile_complete": False}}
 
 @api_router.post("/auth/login")
 async def login(data: UserLogin):
-    user = await db.users.find_one({"email": data.email}, {"_id": 0})
-    if not user or not user.get("password") or not verify_password(data.password, user["password"]):
+    print(f"DEBUG: Login attempt for: {data.email}")
+    # 1. Check credentials collection first
+    auth_data = await db.credentials.find_one({"email": data.email})
+    
+    if not auth_data:
+        print(f"DEBUG: User not in credentials, checking users fallback for: {data.email}")
+        # 2. Backward compatibility: check users collection
+        auth_data = await db.users.find_one({"email": data.email})
+        if not auth_data or "password" not in auth_data:
+            print(f"DEBUG: User not found in either collection or has no password: {data.email}")
+            raise HTTPException(status_code=401, detail="Invalid credentials")
+    
+    # Validate password
+    if not verify_password(data.password, auth_data["password"]):
+        print(f"DEBUG: Password verification failed for: {data.email}")
         raise HTTPException(status_code=401, detail="Invalid credentials")
+    
+    # Fetch user profile
+    user = await db.users.find_one({"user_id": auth_data["user_id"]}, {"_id": 0, "password": 0})
+    if not user:
+        print(f"DEBUG: Profile not found for user_id: {auth_data['user_id']}")
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+        
+    print(f"DEBUG: Login successful for: {data.email} (user_id: {user['user_id']})")
     token = create_jwt(user["user_id"])
-    return {"token": token, "user": {"user_id": user["user_id"], "name": user["name"], "email": user["email"], "profile_image": user.get("profile_image"), "profile_complete": user.get("profile_complete", False)}}
+    return {
+        "token": token, 
+        "user": {
+            "user_id": user["user_id"], 
+            "name": user["name"], 
+            "email": user["email"], 
+            "profile_image": user.get("profile_image"), 
+            "profile_complete": user.get("profile_complete", False)
+        }
+    }
 
 @api_router.post("/auth/google")
 async def google_auth(data: GoogleAuthRequest):
@@ -577,7 +656,7 @@ async def get_me(user: dict = Depends(get_current_user)):
 @api_router.post("/auth/logout")
 async def logout(user: dict = Depends(get_current_user)):
     await db.user_sessions.delete_many({"user_id": user["user_id"]})
-    return {"status": "logged out"}
+    return {"status": "success", "message": "Logged out successfully"}
 
 # --- Profile Routes ---
 @api_router.put("/profile/setup")
@@ -703,9 +782,22 @@ async def get_wardrobe_item(item_id: str, user: dict = Depends(get_current_user)
 
 @api_router.delete("/wardrobe/{item_id}")
 async def delete_wardrobe_item(item_id: str, user: dict = Depends(get_current_user)):
+    print(f"DEBUG: Delete request for item_id: {item_id}, user_id: {user['user_id']}")
+    # Try deleting by item_id
     result = await db.wardrobe_items.delete_one({"item_id": item_id, "user_id": user["user_id"]})
+    
     if result.deleted_count == 0:
+        print(f"DEBUG: Item not found by item_id, trying by _id or other fields...")
+        # Fallback: maybe it's stored as something else? (though shouldn't be with current logic)
+        # But let's check if the item exists at all for this user
+        item = await db.wardrobe_items.find_one({"item_id": item_id})
+        if item:
+            print(f"DEBUG: Item found but user_id mismatch! Item user: {item.get('user_id')}, Current user: {user['user_id']}")
+        else:
+            print(f"DEBUG: Item {item_id} not found in database at all.")
         raise HTTPException(status_code=404, detail="Item not found")
+    
+    print(f"DEBUG: Item {item_id} deleted successfully.")
     return {"status": "deleted"}
 
 # --- Outfit Routes ---
@@ -725,11 +817,16 @@ async def predict_outfit(data: OutfitPredictRequest, user: dict = Depends(get_cu
     else:
         all_items = await db.wardrobe_items.find({"user_id": user["user_id"]}, {"_id": 0}).to_list(100)
         for i in all_items:
-            s["is_store_item"] = False
+            i["is_store_item"] = False
 
     suggestions = await generate_outfit_suggestions(all_items, selected, user_id=user["user_id"], occasion=data.occasion)
     
     items_map = {i.get("item_id") or i.get("product_id"): i for i in all_items}
+    # Add selected item to map if not present (selected is always from wardrobe)
+    sel_id = selected.get("item_id") or selected.get("product_id")
+    if sel_id not in items_map:
+        items_map[sel_id] = selected
+
     enriched = []
     for s in suggestions:
         outfit = {
@@ -760,56 +857,77 @@ async def save_outfit(data: OutfitSaveRequest, user: dict = Depends(get_current_
     }
     await db.outfits.insert_one(outfit)
     outfit.pop("_id", None)
-    return outfit
+    return {"status": "success", "outfit_id": outfit_id, "outfit": outfit}
 
 @api_router.post("/outfit/wear")
 async def wear_outfit(data: WearOutfitRequest, user: dict = Depends(get_current_user)):
+    # 1. Track history
+    history_id = f"hist_{uuid.uuid4().hex[:12]}"
     history = {
-        "history_id": f"hist_{uuid.uuid4().hex[:12]}",
+        "history_id": history_id,
         "user_id": user["user_id"],
         "outfit_id": data.outfit_id,
         "worn_date": datetime.now(timezone.utc).isoformat()
     }
     await db.outfit_history.insert_one(history)
-    outfit = await db.outfits.find_one({"outfit_id": data.outfit_id}, {"_id": 0})
+    
+    # 2. Increment wear count for items
+    outfit = await db.outfits.find_one({"outfit_id": data.outfit_id})
     if outfit:
-        for field in ["top_id", "bottom_id", "shoes_id", "accessory_id"]:
-            if outfit.get(field):
-                item = await db.wardrobe_items.find_one({"item_id": outfit[field]})
-                if item:
-                    # Increment wear count
-                    await db.wardrobe_items.update_one({"item_id": outfit[field]}, {"$inc": {"wear_count": 1}})
-                    
-                    # User preference learning: track preferred colors and styles
-                    color = item.get("color")
-                    style = item.get("style")
-                    if color:
-                        await db.users.update_one({"user_id": user["user_id"]}, {"$inc": {f"preferences.colors.{color}": 1}})
-                    if style:
-                        await db.users.update_one({"user_id": user["user_id"]}, {"$inc": {f"preferences.styles.{style}": 1}})
-                        
-    history.pop("_id", None)
-    return history
+        item_ids = [outfit.get(f) for f in ["top_id", "bottom_id", "shoes_id", "accessory_id"] if outfit.get(f)]
+        if item_ids:
+            # 2. Increment wear count for items
+            await db.wardrobe_items.update_many(
+                {"item_id": {"$in": item_ids}, "user_id": user["user_id"]},
+                {"$inc": {"wear_count": 1}}
+            )
+            
+            # 3. User preference learning: track preferred colors and styles
+            items = await db.wardrobe_items.find({"item_id": {"$in": item_ids}}).to_list(None)
+            for item in items:
+                color = item.get("color")
+                style = item.get("style")
+                if color:
+                    await db.users.update_one({"user_id": user["user_id"]}, {"$inc": {f"preferences.colors.{color}": 1}})
+                if style:
+                    await db.users.update_one({"user_id": user["user_id"]}, {"$inc": {f"preferences.styles.{style}": 1}})
+            
+    return {"status": "success", "history_id": history_id}
 
 @api_router.get("/outfit/history")
 async def get_outfit_history(user: dict = Depends(get_current_user)):
     history = await db.outfit_history.find({"user_id": user["user_id"]}, {"_id": 0}).sort("worn_date", -1).to_list(50)
+    
+    # Pre-fetch items to avoid repeated DB calls
+    wardrobe_items = await db.wardrobe_items.find({"user_id": user["user_id"]}, {"_id": 0}).to_list(200)
+    store_items = await db.store_items.find({}, {"_id": 0}).to_list(200)
+    
+    items_map = {i.get("item_id") or i.get("product_id"): i for i in wardrobe_items + store_items}
+    
+    enriched_history = []
     for h in history:
         outfit = await db.outfits.find_one({"outfit_id": h["outfit_id"]}, {"_id": 0})
         if outfit:
-            for field in ["top_id", "bottom_id", "shoes_id", "accessory_id"]:
-                if outfit.get(field):
-                    item = await db.wardrobe_items.find_one({"item_id": outfit[field]}, {"_id": 0})
-                    h[field.replace("_id", "")] = item
+            h["top"] = items_map.get(outfit.get("top_id"))
+            h["bottom"] = items_map.get(outfit.get("bottom_id"))
+            h["shoes"] = items_map.get(outfit.get("shoes_id"))
+            h["accessory"] = items_map.get(outfit.get("accessory_id"))
             h["compatibility_score"] = outfit.get("compatibility_score")
             h["reason"] = outfit.get("reason")
-    return {"history": history}
+            enriched_history.append(h)
+            
+    return {"history": enriched_history}
 
 @api_router.get("/outfit/saved")
 async def get_saved_outfits(user: dict = Depends(get_current_user)):
     outfits = await db.outfits.find({"user_id": user["user_id"]}, {"_id": 0}).sort("created_at", -1).to_list(50)
-    all_items = await db.wardrobe_items.find({"user_id": user["user_id"]}, {"_id": 0}).to_list(200)
-    items_map = {i["item_id"]: i for i in all_items}
+    
+    # Pre-fetch items to avoid repeated DB calls
+    wardrobe_items = await db.wardrobe_items.find({"user_id": user["user_id"]}, {"_id": 0}).to_list(200)
+    store_items = await db.store_items.find({}, {"_id": 0}).to_list(200)
+    
+    items_map = {i.get("item_id") or i.get("product_id"): i for i in wardrobe_items + store_items}
+    
     enriched = []
     for o in outfits:
         enriched.append({
@@ -885,6 +1003,9 @@ async def get_analytics(user: dict = Depends(get_current_user)):
 
 # Include router
 app.include_router(api_router)
+
+# Mount dataset images
+app.mount("/images", StaticFiles(directory="dataset"), name="images")
 
 app.add_middleware(
     CORSMiddleware,

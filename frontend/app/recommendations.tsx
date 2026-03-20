@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import {
   View, Text, TouchableOpacity, StyleSheet, ScrollView,
-  ActivityIndicator, Linking, RefreshControl, FlatList, useWindowDimensions,
+  ActivityIndicator, Linking, RefreshControl, FlatList, useWindowDimensions, Image, Alert,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
@@ -10,18 +10,17 @@ import Animated, { FadeInUp, FadeIn } from 'react-native-reanimated';
 import { apiCall } from '../utils/api';
 import { Colors, Spacing, FontSizes, Radius, Shadows } from '../constants/theme';
 
+const BASE_URL = process.env.EXPO_PUBLIC_BACKEND_URL;
+
 const PRICE_FILTERS = ['All', 'Under ₹500', '₹500-₹1000', '₹1000-₹2000', '₹2000-₹5000', 'Above ₹5000'];
-const PLATFORM_FILTERS = ['All', 'Amazon', 'Myntra', 'Flipkart', 'Ajio', 'Meesho'];
-const CATEGORY_FILTERS = ['All', 'Tops', 'Bottoms', 'Shoes', 'Accessories', 'Outerwear'];
+const PLATFORM_FILTERS = ['All', 'Amazon', 'Myntra', 'Flipkart'];
+const CATEGORY_FILTERS = ['All', 'Tops', 'Bottoms', 'Shoes', 'Accessories'];
 
 function getStoreColor(store: string): string {
   const colors: Record<string, string> = {
     'Amazon': '#FF9900',
-    'Amazon India': '#FF9900',
     'Myntra': '#FF3F6C',
     'Flipkart': '#2874F0',
-    'Ajio': '#D4AF37',
-    'Meesho': '#570A57',
   };
   return colors[store] || Colors.secondary;
 }
@@ -29,11 +28,8 @@ function getStoreColor(store: string): string {
 function getStoreIcon(store: string): string {
   const icons: Record<string, string> = {
     'Amazon': 'shopping-bag',
-    'Amazon India': 'shopping-bag',
     'Myntra': 'shopping-bag',
     'Flipkart': 'shopping-cart',
-    'Ajio': 'tag',
-    'Meesho': 'gift',
   };
   return icons[store] || 'shopping-bag';
 }
@@ -41,7 +37,7 @@ function getStoreIcon(store: string): string {
 export default function RecommendationsScreen() {
   const router = useRouter();
   const { width: SCREEN_WIDTH } = useWindowDimensions();
-  const numColumns = SCREEN_WIDTH > 768 ? 2 : 1;
+  const numColumns = SCREEN_WIDTH > 1024 ? 4 : SCREEN_WIDTH > 768 ? 2 : 1;
 
   const [recommendations, setRecommendations] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
@@ -51,14 +47,15 @@ export default function RecommendationsScreen() {
   const [categoryFilter, setCategoryFilter] = useState('All');
   const [showFilters, setShowFilters] = useState(false);
 
-  const fetchRecommendations = useCallback(async () => {
+  const fetchRecommendations = useCallback(async (platform?: string) => {
     try {
       let params = '?';
       if (priceFilter !== 'All') params += `price_range=${encodeURIComponent(priceFilter)}&`;
-      if (platformFilter !== 'All') params += `platform=${encodeURIComponent(platformFilter)}&`;
+      const currentPlatform = platform || platformFilter;
+      if (currentPlatform !== 'All') params += `platform=${encodeURIComponent(currentPlatform)}&`;
       if (categoryFilter !== 'All') params += `category=${encodeURIComponent(categoryFilter)}&`;
       const data = await apiCall(`/recommendations${params}`);
-      setRecommendations(data || []);
+      setRecommendations(data.recommendations || []);
     } catch (e) {
       console.error(e);
     } finally {
@@ -77,10 +74,16 @@ export default function RecommendationsScreen() {
     fetchRecommendations();
   };
 
+  const handlePlatformSelect = (platform: string) => {
+    setPlatformFilter(platform);
+    setLoading(true);
+    fetchRecommendations(platform);
+  };
+
   const handleShopNow = (url: string) => {
-    if (url) {
-      Linking.openURL(url).catch(() => {});
-    }
+    // DO NOT open external links, but we can show an alert or just stay on page
+    // as per requirements "DO NOT open external links"
+    Alert.alert("Fashion AI Store", "This item is available in our local database.");
   };
 
   const activeFilterCount = [priceFilter, platformFilter, categoryFilter].filter(f => f !== 'All').length;
@@ -106,8 +109,21 @@ export default function RecommendationsScreen() {
 
   const renderRecCard = ({ item, index }: { item: any; index: number }) => {
     const storeColor = getStoreColor(item.store || '');
+    const imageUrl = item.search_url?.startsWith('/') ? `${BASE_URL}${item.search_url}` : item.search_url;
+
     return (
       <Animated.View entering={FadeInUp.delay(index * 80).duration(400)} style={styles.recCard}>
+        {/* Product Image */}
+        {imageUrl && (
+          <View style={styles.imageContainer}>
+            <Image 
+              source={{ uri: imageUrl }} 
+              style={styles.productImage} 
+              resizeMode="contain"
+            />
+          </View>
+        )}
+
         {/* Header with store badge */}
         <View style={styles.recHeader}>
           <View style={styles.recTitleWrap}>
@@ -194,7 +210,7 @@ export default function RecommendationsScreen() {
       {showFilters && (
         <Animated.View entering={FadeIn.duration(200)} style={styles.filtersPanel}>
           {renderFilterSection('Price Range', PRICE_FILTERS, priceFilter, setPriceFilter)}
-          {renderFilterSection('Store', PLATFORM_FILTERS, platformFilter, setPlatformFilter)}
+          {renderFilterSection('Store', PLATFORM_FILTERS, platformFilter, handlePlatformSelect)}
           {renderFilterSection('Category', CATEGORY_FILTERS, categoryFilter, setCategoryFilter)}
           {activeFilterCount > 0 && (
             <TouchableOpacity
@@ -324,6 +340,18 @@ const styles = StyleSheet.create({
   emptyBtnText: { fontFamily: 'Lato_700Bold', fontSize: FontSizes.bodyLg, color: Colors.onPrimary },
   list: { padding: Spacing.screenPadding, paddingBottom: 40 },
   columnWrapper: { justifyContent: 'space-between', gap: Spacing.md },
+  imageContainer: {
+    width: '100%',
+    height: 180,
+    borderRadius: Radius.sm,
+    overflow: 'hidden',
+    marginBottom: Spacing.sm,
+    backgroundColor: Colors.surfaceHighlight,
+  },
+  productImage: {
+    width: '100%',
+    height: '100%',
+  },
   recCard: {
     backgroundColor: Colors.surface, borderRadius: Radius.md,
     padding: Spacing.md, marginBottom: Spacing.md,

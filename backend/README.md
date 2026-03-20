@@ -49,9 +49,39 @@ JWT_SECRET=your_jwt_secret_key_here
 
 ### 4. Run the Backend
 ```bash
-uvicorn server:app --reload --host 0.0.0.0 --port 8000
+python -m uvicorn server:app --reload --host 0.0.0.0 --port 8000
 ```
 The API will be available at `http://localhost:8000`. You can view the interactive documentation at `http://localhost:8000/docs`.
+
+## ▶️ How to Seed Fake Online Store
+
+To populate the app with a dataset-based online store, follow these steps:
+
+### 1. Ensure MongoDB is running
+Make sure your local MongoDB service is started (default: `mongodb://localhost:27017/`).
+
+### 2. Activate virtual environment
+```bash
+cd backend
+venv\Scripts\activate (Windows)
+# or
+source venv/bin/activate (Linux/Mac)
+```
+
+### 3. Run seed script
+```bash
+python seed_store_db.py
+```
+
+### 4. Expected Output
+If successful, you will see:
+`Successfully seeded X items into store_items collection`
+
+### ℹ️ Important Notes
+- **Dataset Location:** Images are loaded from the `backend/dataset/` directory.
+- **Dynamic Loading:** The system handles any number of images in the folders (shirts, pants, shoes, accessories).
+- **Static Serving:** The backend serves these images via FastAPI's `StaticFiles`. Ensure `app.mount("/images", StaticFiles(directory="dataset"), name="images")` is present in `server.py`.
+- **FashionCLIP:** Each item's visual embedding is generated and stored in MongoDB for similarity matching.
 
 ### **AI Pipeline: FashionCLIP**
 This project uses [Fashion-CLIP](https://github.com/patrickjohncyh/fashion-clip) for:

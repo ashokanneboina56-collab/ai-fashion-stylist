@@ -10,7 +10,7 @@ import Animated, { FadeInUp } from 'react-native-reanimated';
 import { apiCall } from '../../utils/api';
 import { Colors, Spacing, FontSizes, Radius, Shadows } from '../../constants/theme';
 
-const CATEGORIES = ['All', 'Tops', 'Bottoms', 'Shoes', 'Accessories', 'Outerwear', 'Dresses', 'Activewear'];
+const CATEGORIES = ['All', 'Tops', 'Bottoms', 'Shoes', 'Accessories'];
 
 export default function WardrobeScreen() {
   const { width: SCREEN_WIDTH } = useWindowDimensions();
@@ -26,30 +26,63 @@ export default function WardrobeScreen() {
   const [sortBy, setSortBy] = useState('');
   const router = useRouter();
 
+  const filterItems = (all_items: any[], query: string, cat: string) => {
+    // Category Mapping (STRICT)
+    const TOPS = ["t-shirt", "shirt", "hoodie", "jacket", "top"];
+    const BOTTOMS = ["jeans", "trousers", "shorts", "pants"];
+    const SHOES = ["shoes", "sneakers", "sandals", "footwear"];
+    const ACCESSORIES = ["accessory", "belt", "bracelet", "watch"];
+
+    let filtered = [...all_items];
+
+    if (cat !== 'All') {
+      const cat_lower = cat.toLowerCase();
+      filtered = filtered.filter(item => {
+        const item_cat = (item.category || '').toLowerCase();
+        if (cat_lower === 'tops') return TOPS.includes(item_cat);
+        if (cat_lower === 'bottoms') return BOTTOMS.includes(item_cat);
+        if (cat_lower === 'shoes') return SHOES.includes(item_cat);
+        if (cat_lower === 'accessories') return ACCESSORIES.includes(item_cat);
+        return item_cat === cat_lower;
+      });
+    }
+
+    if (query) {
+      const q = query.toLowerCase();
+      filtered = filtered.filter(item => 
+        (item.name?.toLowerCase() || '').includes(q) ||
+        (item.category?.toLowerCase() || '').includes(q) ||
+        (item.color?.toLowerCase() || '').includes(q)
+      );
+    }
+
+    setFilteredItems(filtered);
+  };
+
+  const handleSearch = (text: string) => {
+    setSearchQuery(text);
+    filterItems(items, text, category);
+  };
+
+  const handleCategoryChange = (cat: string) => {
+    setCategory(cat);
+    filterItems(items, searchQuery, cat);
+  };
+
   const fetchItems = useCallback(async () => {
     try {
       setLoading(true);
       const data = await apiCall('/wardrobe');
       const wardrobeItems = data.items || [];
       setItems(wardrobeItems);
-      setFilteredItems(wardrobeItems);
+      filterItems(wardrobeItems, searchQuery, category);
     } catch (e) {
       console.error(e);
     } finally {
       setLoading(false);
       setRefreshing(false);
     }
-  }, []);
-
-  const handleSearch = (text: string) => {
-    setSearchQuery(text);
-    const filtered = items.filter(item => 
-      (item.name?.toLowerCase() || '').includes(text.toLowerCase()) ||
-      (item.category?.toLowerCase() || '').includes(text.toLowerCase()) ||
-      (item.color?.toLowerCase() || '').includes(text.toLowerCase())
-    );
-    setFilteredItems(filtered);
-  };
+  }, [searchQuery, category]);
 
   useFocusEffect(
     useCallback(() => {
@@ -60,6 +93,12 @@ export default function WardrobeScreen() {
   const onRefresh = () => { setRefreshing(true); fetchItems(); };
 
   const deleteItem = async (itemId: string) => {
+    const idToDelete = itemId;
+    if (!idToDelete) {
+      Alert.alert('Error', 'Item ID is missing. Cannot delete.');
+      return;
+    }
+    
     Alert.alert('Delete Item', 'Are you sure you want to remove this item?', [
       { text: 'Cancel', style: 'cancel' },
       {
@@ -67,10 +106,17 @@ export default function WardrobeScreen() {
         style: 'destructive',
         onPress: async () => {
           try {
-            await apiCall(`/wardrobe/${itemId}`, { method: 'DELETE' });
-            setItems(prev => prev.filter(i => i.item_id !== itemId));
-          } catch (e) {
-            console.error(e);
+            console.log('Deleting item:', idToDelete);
+            await apiCall(`/wardrobe/${idToDelete}`, { method: 'DELETE' });
+            
+            // Update local state immediately for better UX
+            setItems(prev => prev.filter(i => (i.item_id || i.id) !== idToDelete));
+            setFilteredItems(prev => prev.filter(i => (i.item_id || i.id) !== idToDelete));
+            
+            Alert.alert('Success', 'Item removed from your wardrobe');
+          } catch (e: any) {
+            console.error('Delete failed:', e);
+            Alert.alert('Error', e.message || 'Failed to delete item');
           }
         }
       }
@@ -79,34 +125,47 @@ export default function WardrobeScreen() {
 
   const renderItem = ({ item, index }: { item: any; index: number }) => (
     <Animated.View entering={FadeInUp.delay(index * 80).duration(400)} style={[styles.cardWrap, { width: cardWidth }]}>
-      <TouchableOpacity
-        testID={`wardrobe-item-${item?.item_id}`}
-        style={styles.card}
-        onPress={() => router.push(`/clothing/${item?.item_id}`)}
-        activeOpacity={0.8}
-      >
-        {item?.image_base64 ? (
-          <Image source={{ uri: `data:image/jpeg;base64,${item.image_base64}` }} style={styles.cardImage} resizeMode="cover" />
-        ) : (
-          <View style={[styles.cardImage, styles.placeholderImage]}>
-            <Ionicons name="shirt-outline" size={40} color={Colors.textTertiary} />
+      <View style={styles.card}>
+        <TouchableOpacity
+          testID={`wardrobe-item-${item?.item_id}`}
+          onPress={() => router.push(`/clothing/${item?.item_id}`)}
+          activeOpacity={0.8}
+        >
+          {item?.image_base64 ? (
+            <Image source={{ uri: `data:image/jpeg;base64,${item.image_base64}` }} style={styles.cardImage} resizeMode="cover" />
+          ) : (
+            <View style={[styles.cardImage, styles.placeholderImage]}>
+              <Ionicons name="shirt-outline" size={40} color={Colors.textTertiary} />
+            </View>
+          )}
+          
+          <View style={styles.cardInfo}>
+            <Text style={styles.cardName} numberOfLines={1}>{item?.name || 'Unnamed Item'}</Text>
+            <View style={styles.cardMeta}>
+              <View style={[styles.colorDot, { backgroundColor: getColorHex(item?.color || 'Grey') }]} />
+              <Text style={styles.cardCategory}>{item?.category || 'Uncategorized'}</Text>
+            </View>
+            <Text style={styles.cardWear}>Worn {item?.wear_count || 0}x</Text>
           </View>
-        )}
+        </TouchableOpacity>
+
         <TouchableOpacity 
           style={styles.deleteIcon} 
-          onPress={() => deleteItem(item?.item_id)}
+          onPress={() => {
+            const id = item?.item_id || item?.id;
+            if (id) {
+              deleteItem(id);
+            } else {
+              console.warn('Item has no ID:', item);
+              Alert.alert('Error', 'This item cannot be deleted (missing ID)');
+            }
+          }}
+          activeOpacity={0.7}
+          hitSlop={{ top: 15, bottom: 15, left: 15, right: 15 }}
         >
           <Feather name="trash-2" size={16} color="#fff" />
         </TouchableOpacity>
-        <View style={styles.cardInfo}>
-          <Text style={styles.cardName} numberOfLines={1}>{item?.name || 'Unnamed Item'}</Text>
-          <View style={styles.cardMeta}>
-            <View style={[styles.colorDot, { backgroundColor: getColorHex(item?.color || 'Grey') }]} />
-            <Text style={styles.cardCategory}>{item?.category || 'Uncategorized'}</Text>
-          </View>
-          <Text style={styles.cardWear}>Worn {item?.wear_count || 0}x</Text>
-        </View>
-      </TouchableOpacity>
+      </View>
     </Animated.View>
   );
 
@@ -157,7 +216,7 @@ export default function WardrobeScreen() {
           <TouchableOpacity
             testID={`filter-${cat}`}
             style={[styles.filterChip, category === cat && styles.filterChipActive]}
-            onPress={() => setCategory(cat)}
+            onPress={() => handleCategoryChange(cat)}
           >
             <Text style={[styles.filterText, category === cat && styles.filterTextActive]}>{cat}</Text>
           </TouchableOpacity>
@@ -284,7 +343,9 @@ const styles = StyleSheet.create({
   cardWear: { fontFamily: 'Lato_400Regular', fontSize: FontSizes.tiny, color: Colors.textTertiary, marginTop: 2 },
   deleteIcon: {
     position: 'absolute', top: 10, right: 10,
-    backgroundColor: 'rgba(255,0,0,0.6)', width: 28, height: 28,
-    borderRadius: 14, justifyContent: 'center', alignItems: 'center',
+    backgroundColor: 'rgba(255,0,0,0.8)', width: 32, height: 32,
+    borderRadius: 16, justifyContent: 'center', alignItems: 'center',
+    zIndex: 100, // Explicitly set very high zIndex
+    elevation: 5, // For Android
   },
 });

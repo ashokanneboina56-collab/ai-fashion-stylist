@@ -10,6 +10,8 @@ import Animated, { FadeInUp, FadeInRight } from 'react-native-reanimated';
 import { apiCall } from '../../utils/api';
 import { Colors, Spacing, FontSizes, Radius, Shadows } from '../../constants/theme';
 
+const BASE_URL = process.env.EXPO_PUBLIC_BACKEND_URL;
+
 export default function OutfitsScreen() {
   const { width: SCREEN_WIDTH } = useWindowDimensions();
   const isLargeScreen = SCREEN_WIDTH > 600;
@@ -29,15 +31,19 @@ export default function OutfitsScreen() {
       setLoading(true);
       const data = await apiCall('/wardrobe');
       setItems(data.items || []);
-    } catch (e) {
-      console.error(e);
+    } catch (e: any) {
+      console.error('Fetch items failed:', e);
+      Alert.alert('Error', 'Failed to load wardrobe items');
     } finally {
       setLoading(false);
     }
   };
 
   const predictOutfit = async () => {
-    if (!selectedItem) return;
+    if (!selectedItem) {
+      Alert.alert('Selection Required', 'Please choose an item from your wardrobe first.');
+      return;
+    }
     setPredicting(true);
     setOutfits([]);
     try {
@@ -49,9 +55,13 @@ export default function OutfitsScreen() {
           source: source
         }),
       });
+      if (!data.outfits || data.outfits.length === 0) {
+        Alert.alert('No Matches', 'AI couldn\'t find a great combination. Try adding more items or changing the source.');
+      }
       setOutfits(data.outfits || []);
     } catch (e: any) {
-      console.error(e);
+      console.error('Prediction failed:', e);
+      Alert.alert('Error', e.message || 'Failed to generate outfits');
     } finally {
       setPredicting(false);
     }
@@ -60,34 +70,77 @@ export default function OutfitsScreen() {
   const saveOutfit = async (outfit: any) => {
     try {
       setSavingOutfit(outfit.outfit_id);
-      await apiCall('/outfit/save', {
+      const data = await apiCall('/outfit/save', {
         method: 'POST',
         body: JSON.stringify({
-          top_id: outfit.top?.item_id || null,
-          bottom_id: outfit.bottom?.item_id || null,
-          shoes_id: outfit.shoes?.item_id || null,
-          accessory_id: outfit.accessory?.item_id || null,
+          top_id: outfit.top?.item_id || outfit.top?.product_id || null,
+          bottom_id: outfit.bottom?.item_id || outfit.bottom?.product_id || null,
+          shoes_id: outfit.shoes?.item_id || outfit.shoes?.product_id || null,
+          accessory_id: outfit.accessory?.item_id || outfit.accessory?.product_id || null,
           compatibility_score: outfit.compatibility_score,
           reason: outfit.reason,
         }),
       });
-    } catch (e) {
-      console.error(e);
+      if (data.status === 'success') {
+        // Update local outfit ID if backend generated a new one
+        outfit.outfit_id = data.outfit_id;
+        Alert.alert('Success', 'Outfit saved to your collection!');
+        // Redirect to Profile/Saved Outfits or similar
+        router.push('/(tabs)/profile');
+      }
+    } catch (e: any) {
+      console.error('Save failed:', e);
+      Alert.alert('Error', 'Failed to save outfit');
     } finally {
       setSavingOutfit(null);
     }
   };
 
-  const wearOutfit = async (outfitId: string) => {
+  const wearOutfit = async (outfit: any) => {
     try {
-      await apiCall('/outfit/wear', {
+      // First, ensure the outfit is saved so we can track history
+      let outfitId = outfit.outfit_id;
+      
+      const wearResult = await apiCall('/outfit/wear', {
         method: 'POST',
         body: JSON.stringify({ outfit_id: outfitId }),
       });
-      Alert.alert('Success', 'Outfit marked as worn!');
-    } catch (e) {
-      console.error(e);
-      Alert.alert('Error', 'Failed to update history');
+      
+      if (wearResult.status === 'success') {
+        Alert.alert('Success', 'Outfit marked as worn! Wear counts updated.');
+        router.push('/(tabs)/analytics');
+      }
+    } catch (e: any) {
+      // If outfit not found, it means it's a generated one not yet saved
+      if (e.message.includes('not found') || e.message.includes('404')) {
+        try {
+          // Auto-save first
+          const saveResult = await apiCall('/outfit/save', {
+            method: 'POST',
+            body: JSON.stringify({
+              top_id: outfit.top?.item_id || outfit.top?.product_id || null,
+              bottom_id: outfit.bottom?.item_id || outfit.bottom?.product_id || null,
+              shoes_id: outfit.shoes?.item_id || outfit.shoes?.product_id || null,
+              accessory_id: outfit.accessory?.item_id || outfit.accessory?.product_id || null,
+              compatibility_score: outfit.compatibility_score,
+              reason: outfit.reason,
+            }),
+          });
+          
+          if (saveResult.status === 'success') {
+            await apiCall('/outfit/wear', {
+              method: 'POST',
+              body: JSON.stringify({ outfit_id: saveResult.outfit_id }),
+            });
+            Alert.alert('Success', 'Outfit saved and marked as worn!');
+            router.push('/(tabs)/analytics');
+          }
+        } catch (err) {
+          Alert.alert('Error', 'Failed to track outfit wear.');
+        }
+      } else {
+        Alert.alert('Error', 'Failed to update history');
+      }
     }
   };
 
@@ -108,7 +161,21 @@ export default function OutfitsScreen() {
       </View>
 
       <View style={styles.outfitActions}>
-        <TouchableOpacity style={styles.wearBtn} onPress={() => wearOutfit(outfit.outfit_id)}>
+        <TouchableOpacity 
+          style={styles.saveBtn} 
+          onPress={() => saveOutfit(outfit)}
+          disabled={savingOutfit === outfit.outfit_id}
+        >
+          {savingOutfit === outfit.outfit_id ? (
+            <ActivityIndicator size="small" color={Colors.secondary} />
+          ) : (
+            <>
+              <Feather name="bookmark" size={16} color={Colors.secondary} />
+              <Text style={styles.saveBtnText}>Save</Text>
+            </>
+          )}
+        </TouchableOpacity>
+        <TouchableOpacity style={styles.wearBtn} onPress={() => wearOutfit(outfit)}>
           <Text style={styles.wearBtnText}>Mark as Worn</Text>
         </TouchableOpacity>
       </View>
@@ -117,15 +184,27 @@ export default function OutfitsScreen() {
 
   const renderOutfitItem = (item: any, label: string) => {
     if (!item) return null;
+    
+    // Support both wardrobe (base64) and store (url) images
+    const imageSource = item.image_base64 
+      ? { uri: `data:image/jpeg;base64,${item.image_base64}` }
+      : item.image_url 
+        ? { uri: item.image_url.startsWith('/') ? `${BASE_URL}${item.image_url}` : item.image_url }
+        : null;
+
     return (
       <View style={[styles.outfitPiece, { width: isLargeScreen ? '48%' : '100%' }]}>
         <View style={styles.sourceTag}>
           <Text style={styles.sourceTagText}>
-            {item.is_store_item ? "From Online Store" : "From Your Closet"}
+            {item.is_store_item ? "From Store" : "From Closet"}
           </Text>
         </View>
-        {item?.image_base64 ? (
-          <Image source={{ uri: `data:image/jpeg;base64,${item.image_base64}` }} style={styles.outfitPieceImage} resizeMode="cover" />
+        {imageSource ? (
+          <Image 
+            source={imageSource} 
+            style={styles.outfitPieceImage} 
+            resizeMode="contain" 
+          />
         ) : (
           <View style={[styles.outfitPieceImage, styles.placeholder]}>
             <MaterialCommunityIcons name="hanger" size={20} color={Colors.textTertiary} />
@@ -302,20 +381,42 @@ const styles = StyleSheet.create({
   scoreText: { fontFamily: 'Lato_700Bold', fontSize: FontSizes.bodyMd, color: Colors.onPrimary },
   outfitGrid: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'space-between' },
   outfitPiece: { width: '48%', marginBottom: Spacing.sm },
-  outfitPieceImage: { width: '100%', height: 100, borderRadius: Radius.sm, backgroundColor: Colors.surfaceHighlight },
+  outfitPieceImage: { 
+    width: '100%', 
+    height: 180, 
+    borderRadius: Radius.sm, 
+    backgroundColor: Colors.surfaceHighlight,
+  },
   outfitPieceLabel: { fontFamily: 'Lato_700Bold', fontSize: FontSizes.tiny, color: Colors.secondary, marginTop: 4, textTransform: 'uppercase', letterSpacing: 1 },
   outfitPieceName: { fontFamily: 'Lato_400Regular', fontSize: FontSizes.caption, color: Colors.textSecondary },
   outfitReason: { fontFamily: 'Lato_400Regular', fontSize: FontSizes.bodyMd, color: Colors.textSecondary, marginTop: Spacing.sm, fontStyle: 'italic' },
   outfitActions: { flexDirection: 'row', marginTop: Spacing.md, gap: Spacing.sm },
+  saveBtn: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 12,
+    borderRadius: Radius.md,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    backgroundColor: Colors.surface,
+    gap: 8,
+  },
+  saveBtnText: {
+    color: Colors.secondary,
+    fontFamily: 'Lato_700Bold',
+    fontSize: FontSizes.bodySm,
+  },
   wearBtn: {
     backgroundColor: Colors.secondary,
+    flex: 2,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
     paddingVertical: 12,
     borderRadius: Radius.md,
     gap: 8,
-    marginTop: 12,
   },
   wearBtnText: {
     color: Colors.onPrimary,

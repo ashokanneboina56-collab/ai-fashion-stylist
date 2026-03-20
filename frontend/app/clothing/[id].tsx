@@ -34,16 +34,20 @@ export default function ClothingDetailScreen() {
   };
 
   const deleteItem = () => {
+    if (!id) return;
     Alert.alert('Delete Item', 'Are you sure you want to remove this item?', [
       { text: 'Cancel', style: 'cancel' },
       {
         text: 'Delete', style: 'destructive',
         onPress: async () => {
           try {
+            console.log('Deleting from detail screen:', id);
             await apiCall(`/wardrobe/${id}`, { method: 'DELETE' });
-            router.back();
-          } catch (e) {
-            Alert.alert('Error', 'Failed to delete item');
+            Alert.alert('Success', 'Item deleted');
+            router.replace('/(tabs)/wardrobe');
+          } catch (e: any) {
+            console.error('Delete failed:', e);
+            Alert.alert('Error', e.message || 'Failed to delete item');
           }
         },
       },
