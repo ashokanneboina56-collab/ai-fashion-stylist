@@ -24,7 +24,19 @@ export default function ClothingDetailScreen() {
   const fetchItem = async () => {
     try {
       const data = await apiCall(`/wardrobe/${id}`);
-      setItem(data);
+      
+      // Fetch history for this item
+      const historyData = await apiCall('/outfit/history');
+      const itemHistory = (historyData.history || []).filter((h: any) => 
+        h.top_id === id || h.bottom_id === id || h.shoes_id === id || h.accessory_id === id
+      );
+      
+      const lastWorn = itemHistory.length > 0 ? itemHistory[0].worn_date : null;
+      
+      setItem({
+        ...data,
+        lastWorn
+      });
     } catch (e) {
       Alert.alert('Error', 'Item not found');
       router.back();
@@ -57,7 +69,10 @@ export default function ClothingDetailScreen() {
   const predictOutfit = async () => {
     setPredicting(true);
     try {
-      router.push('/(tabs)/outfits');
+      router.push({
+        pathname: '/(tabs)/outfits',
+        params: { initialItemId: id }
+      });
     } catch (e) {
       console.error(e);
     } finally {
@@ -104,6 +119,7 @@ export default function ClothingDetailScreen() {
             <AttrRow icon="layers" label="Texture" value={item.texture} />
             <AttrRow icon="star" label="Style" value={item.style} />
             <AttrRow icon="repeat" label="Worn" value={`${item.wear_count || 0} times`} />
+            <AttrRow icon="clock" label="Last Worn" value={item.lastWorn ? new Date(item.lastWorn).toLocaleDateString() : 'Never'} />
             <AttrRow icon="calendar" label="Added" value={new Date(item.created_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })} />
           </View>
 

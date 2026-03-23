@@ -1,10 +1,10 @@
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useEffect } from 'react';
 import {
   View, Text, TouchableOpacity, StyleSheet, ScrollView,
   Image, ActivityIndicator, FlatList, Alert, useWindowDimensions,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { useFocusEffect } from 'expo-router';
+import { useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
 import { MaterialCommunityIcons, Feather, FontAwesome5 } from '@expo/vector-icons';
 import Animated, { FadeInUp, FadeInRight } from 'react-native-reanimated';
 import { apiCall } from '../../utils/api';
@@ -16,6 +16,10 @@ export default function OutfitsScreen() {
   const { width: SCREEN_WIDTH } = useWindowDimensions();
   const isLargeScreen = SCREEN_WIDTH > 600;
 
+  const params = useLocalSearchParams<{ initialItemId: string }>();
+  const initialItemId = params.initialItemId;
+  const router = useRouter();
+
   const [items, setItems] = useState<any[]>([]);
   const [selectedItem, setSelectedItem] = useState<any>(null);
   const [outfits, setOutfits] = useState<any[]>([]);
@@ -25,6 +29,7 @@ export default function OutfitsScreen() {
   const [occasion, setOccasion] = useState('casual');
   const [source, setSource] = useState('wardrobe'); // 'wardrobe' or 'store'
   const [showOccasions, setShowOccasions] = useState(false);
+  const [autoPredictedId, setAutoPredictedId] = useState<string | null>(null);
 
   const fetchItems = async () => {
     try {
@@ -67,6 +72,25 @@ export default function OutfitsScreen() {
     }
   };
 
+  // Auto-select item if passed via params
+  useEffect(() => {
+    if (initialItemId && items.length > 0) {
+      const item = items.find(i => i.item_id === initialItemId);
+      if (item && !selectedItem) {
+        setSelectedItem(item);
+      }
+    }
+  }, [initialItemId, items.length, !!selectedItem]);
+
+  // Auto-predict if selectedItem changes and it was from initialItemId
+  useEffect(() => {
+    if (selectedItem && selectedItem.item_id === initialItemId && 
+        autoPredictedId !== initialItemId && !predicting) {
+      setAutoPredictedId(initialItemId);
+      predictOutfit();
+    }
+  }, [selectedItem?.item_id, initialItemId, autoPredictedId, predicting]);
+
   const saveOutfit = async (outfit: any) => {
     try {
       setSavingOutfit(outfit.outfit_id);
@@ -85,7 +109,10 @@ export default function OutfitsScreen() {
         // Update local outfit ID if backend generated a new one
         outfit.outfit_id = data.outfit_id;
         Alert.alert('Success', 'Outfit saved to your collection!');
-        // Redirect to Profile/Saved Outfits or similar
+        // Redirect to Profile/Saved Outfits
+        router.push('/(tabs)/profile');
+      } else if (data.status === 'already_saved') {
+        Alert.alert('Already Saved', 'This outfit combination is already in your collection.');
         router.push('/(tabs)/profile');
       }
     } catch (e: any) {
@@ -339,8 +366,22 @@ export default function OutfitsScreen() {
 
 const styles = StyleSheet.create({
   safe: { flex: 1, backgroundColor: Colors.background },
-  header: { paddingHorizontal: Spacing.screenPadding, paddingTop: Spacing.md, paddingBottom: Spacing.sm },
-  headerTitle: { fontFamily: 'PlayfairDisplay_700Bold', fontSize: FontSizes.h1, color: Colors.textPrimary },
+  header: { 
+    height: 60,
+    minHeight: 60,
+    flexShrink: 0,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: Spacing.screenPadding,
+    backgroundColor: Colors.surface,
+  },
+  headerTitle: { 
+    fontFamily: 'PlayfairDisplay_700Bold', 
+    fontSize: FontSizes.h2, 
+    color: Colors.textPrimary,
+    textAlign: 'center',
+  },
   headerSubtitle: { fontFamily: 'Lato_400Regular', fontSize: FontSizes.bodyMd, color: Colors.textSecondary, marginTop: 4 },
   centered: { flex: 1, justifyContent: 'center', alignItems: 'center', paddingTop: 100 },
   emptyTitle: { fontFamily: 'PlayfairDisplay_700Bold', fontSize: FontSizes.h3, color: Colors.textPrimary, marginTop: Spacing.lg },

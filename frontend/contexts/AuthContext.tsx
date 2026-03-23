@@ -43,15 +43,25 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const loadAuth = async () => {
     try {
+      console.log('Starting loadAuth...');
       const savedToken = await AsyncStorage.getItem('auth_token');
       const savedUser = await AsyncStorage.getItem('auth_user');
+      console.log('loadAuth data retrieved:', !!savedToken, !!savedUser);
+      
       if (savedToken && savedUser) {
-        setToken(savedToken);
-        setUser(JSON.parse(savedUser));
+        try {
+          setToken(savedToken);
+          setUser(JSON.parse(savedUser));
+        } catch (parseError) {
+          console.error('Error parsing saved user:', parseError);
+          await AsyncStorage.removeItem('auth_token');
+          await AsyncStorage.removeItem('auth_user');
+        }
       }
     } catch (e) {
-      // ignore
+      console.error('loadAuth failed:', e);
     } finally {
+      console.log('loadAuth finishing, setting isLoading to false');
       setIsLoading(false);
     }
   };

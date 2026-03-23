@@ -83,7 +83,7 @@ export default function RecommendationsScreen() {
   const handleShopNow = (url: string) => {
     // DO NOT open external links, but we can show an alert or just stay on page
     // as per requirements "DO NOT open external links"
-    Alert.alert("Fashion AI Store", "This item is available in our local database.");
+    Alert.alert("Fashion AI Store", "This item is available in our local database for virtual trying.");
   };
 
   const activeFilterCount = [priceFilter, platformFilter, categoryFilter].filter(f => f !== 'All').length;

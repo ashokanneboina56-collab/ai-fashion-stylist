@@ -1,7 +1,7 @@
 import React, { useState, useCallback } from 'react';
 import {
   View, Text, TouchableOpacity, StyleSheet, FlatList,
-  TextInput, Image, ActivityIndicator, RefreshControl, useWindowDimensions, Alert,
+  TextInput, Image, ActivityIndicator, RefreshControl, useWindowDimensions, Alert, Platform,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter, useFocusEffect } from 'expo-router';
@@ -71,14 +71,17 @@ export default function WardrobeScreen() {
 
   const fetchItems = useCallback(async () => {
     try {
+      console.log('Wardrobe: fetching items...');
       setLoading(true);
       const data = await apiCall('/wardrobe');
       const wardrobeItems = data.items || [];
+      console.log('Wardrobe: items fetched:', wardrobeItems.length);
       setItems(wardrobeItems);
       filterItems(wardrobeItems, searchQuery, category);
     } catch (e) {
-      console.error(e);
+      console.error('Wardrobe: fetch failed:', e);
     } finally {
+      console.log('Wardrobe: fetch finishing');
       setLoading(false);
       setRefreshing(false);
     }
@@ -95,32 +98,47 @@ export default function WardrobeScreen() {
   const deleteItem = async (itemId: string) => {
     const idToDelete = itemId;
     if (!idToDelete) {
-      Alert.alert('Error', 'Item ID is missing. Cannot delete.');
+      console.error('Delete attempted without ID');
       return;
     }
     
-    Alert.alert('Delete Item', 'Are you sure you want to remove this item?', [
-      { text: 'Cancel', style: 'cancel' },
-      {
-        text: 'Delete',
-        style: 'destructive',
-        onPress: async () => {
-          try {
-            console.log('Deleting item:', idToDelete);
-            await apiCall(`/wardrobe/${idToDelete}`, { method: 'DELETE' });
-            
-            // Update local state immediately for better UX
-            setItems(prev => prev.filter(i => (i.item_id || i.id) !== idToDelete));
-            setFilteredItems(prev => prev.filter(i => (i.item_id || i.id) !== idToDelete));
-            
-            Alert.alert('Success', 'Item removed from your wardrobe');
-          } catch (e: any) {
-            console.error('Delete failed:', e);
-            Alert.alert('Error', e.message || 'Failed to delete item');
-          }
+    console.log('Prompting delete for:', idToDelete);
+
+    const performDelete = async () => {
+      try {
+        console.log('Executing API delete for:', idToDelete);
+        const response = await apiCall(`/wardrobe/${idToDelete}`, { method: 'DELETE' });
+        console.log('Delete API response:', response);
+        
+        // Update local state immediately for better UX
+        setItems(prev => prev.filter(i => (i.item_id || i.id) !== idToDelete));
+        setFilteredItems(prev => prev.filter(i => (i.item_id || i.id) !== idToDelete));
+        
+        if (Platform.OS === 'web') {
+          alert('Item removed from your wardrobe');
+        } else {
+          Alert.alert('Success', 'Item removed from your wardrobe');
+        }
+      } catch (e: any) {
+        console.error('Delete failed:', e);
+        if (Platform.OS === 'web') {
+          alert(`Error: ${e.message || 'Failed to delete item'}`);
+        } else {
+          Alert.alert('Error', e.message || 'Failed to delete item');
         }
       }
-    ]);
+    };
+
+    if (Platform.OS === 'web') {
+      if (window.confirm('Are you sure you want to remove this item?')) {
+        performDelete();
+      }
+    } else {
+      Alert.alert('Delete Item', 'Are you sure you want to remove this item?', [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Delete', style: 'destructive', onPress: performDelete }
+      ]);
+    }
   };
 
   const renderItem = ({ item, index }: { item: any; index: number }) => (
@@ -132,7 +150,7 @@ export default function WardrobeScreen() {
           activeOpacity={0.8}
         >
           {item?.image_base64 ? (
-            <Image source={{ uri: `data:image/jpeg;base64,${item.image_base64}` }} style={styles.cardImage} resizeMode="cover" />
+            <Image source={{ uri: `data:image/jpeg;base64,${item.image_base64}` }} style={styles.cardImage} resizeMode="contain" />
           ) : (
             <View style={[styles.cardImage, styles.placeholderImage]}>
               <Ionicons name="shirt-outline" size={40} color={Colors.textTertiary} />
@@ -267,10 +285,21 @@ function getColorHex(colorName: string): string {
 const styles = StyleSheet.create({
   safe: { flex: 1, backgroundColor: Colors.background },
   header: {
-    flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
-    paddingHorizontal: Spacing.screenPadding, paddingTop: Spacing.md, paddingBottom: Spacing.sm,
+    height: 60,
+    minHeight: 60,
+    flexShrink: 0,
+    flexDirection: 'row', 
+    justifyContent: 'space-between', 
+    alignItems: 'center',
+    paddingHorizontal: Spacing.screenPadding,
+    backgroundColor: Colors.surface,
   },
-  headerTitle: { fontFamily: 'PlayfairDisplay_700Bold', fontSize: FontSizes.h1, color: Colors.textPrimary },
+  headerTitle: { 
+    fontFamily: 'PlayfairDisplay_700Bold', 
+    fontSize: FontSizes.h2, 
+    color: Colors.textPrimary,
+    textAlign: 'center',
+  },
   headerSubtitle: { fontFamily: 'Lato_400Regular', fontSize: FontSizes.caption, color: Colors.textSecondary, marginTop: 2 },
   addBtn: {
     backgroundColor: Colors.secondary, width: 48, height: 48,
@@ -306,9 +335,13 @@ const styles = StyleSheet.create({
   },
   filterList: {
     paddingHorizontal: Spacing.screenPadding,
-    paddingVertical: Spacing.sm,
-    marginBottom: Spacing.md,
-    maxHeight: 60,
+    height: 60,
+    minHeight: 60,
+    flexShrink: 0,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 20,
   },
   filterChip: {
     paddingHorizontal: Spacing.md, paddingVertical: Spacing.sm,

@@ -1,29 +1,27 @@
-import { useRouter } from 'expo-router';
-import { useAuth } from '../contexts/AuthContext';
 import { View, ActivityIndicator, StyleSheet } from 'react-native';
-import React, { useEffect } from 'react';
+import { Redirect } from 'expo-router';
+import { useAuth } from '../contexts/AuthContext';
+import React from 'react';
 
 export default function Index() {
   const { user, isLoading } = useAuth();
-  const router = useRouter();
 
-  useEffect(() => {
-    if (!isLoading) {
-      if (user && !user.profile_complete) {
-        router.replace('/profile-setup');
-      } else if (user) {
-        router.replace('/(tabs)/wardrobe');
-      } else {
-        router.replace('/(auth)/login');
-      }
+  if (isLoading) {
+    return (
+      <View style={styles.container}>
+        <ActivityIndicator size="large" color="#D4AF37" />
+      </View>
+    );
+  }
+
+  if (user) {
+    if (!user.profile_complete) {
+      return <Redirect href="/profile-setup" />;
     }
-  }, [user, isLoading]);
+    return <Redirect href="/(tabs)/wardrobe" />;
+  }
 
-  return (
-    <View style={styles.container}>
-      <ActivityIndicator size="large" color="#D4AF37" />
-    </View>
-  );
+  return <Redirect href="/(auth)/login" />;
 }
 
 const styles = StyleSheet.create({

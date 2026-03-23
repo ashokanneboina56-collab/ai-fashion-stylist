@@ -40,10 +40,10 @@ def warmup():
 warmup()
 
 # --- Fashion Constants ---
-TOPS = ["t-shirt", "shirt", "hoodie", "jacket"]
-BOTTOMS = ["jeans", "trousers", "shorts"]
-SHOES = ["shoes", "sneakers", "sandals"]
-ACCESSORIES = ["accessory"]
+TOPS = ["t-shirt", "shirt", "hoodie", "jacket", "top"]
+BOTTOMS = ["jeans", "trousers", "shorts", "pants"]
+SHOES = ["shoes", "sneakers", "sandals", "footwear"]
+ACCESSORIES = ["accessory", "belt", "bracelet", "watch"]
 DRESSES = ["dress"]
 
 CATEGORIES = TOPS + BOTTOMS + SHOES + ACCESSORIES + DRESSES
@@ -843,9 +843,27 @@ async def predict_outfit(data: OutfitPredictRequest, user: dict = Depends(get_cu
 
 @api_router.post("/outfit/save")
 async def save_outfit(data: OutfitSaveRequest, user: dict = Depends(get_current_user)):
+    # Create a unique outfit key (sort IDs to handle order)
+    component_ids = sorted([str(id) for id in [data.top_id, data.bottom_id, data.shoes_id, data.accessory_id] if id])
+    outfit_key = "*".join(component_ids)
+    
+    # Check for duplicate
+    existing = await db.outfits.find_one({
+        "user_id": user["user_id"],
+        "outfit_key": outfit_key
+    })
+    
+    if existing:
+        return {
+            "status": "already_saved",
+            "message": "Outfit already saved",
+            "outfit_id": existing["outfit_id"]
+        }
+
     outfit_id = f"outfit_{uuid.uuid4().hex[:12]}"
     outfit = {
         "outfit_id": outfit_id,
+        "outfit_key": outfit_key,
         "user_id": user["user_id"],
         "top_id": data.top_id,
         "bottom_id": data.bottom_id,
@@ -861,36 +879,62 @@ async def save_outfit(data: OutfitSaveRequest, user: dict = Depends(get_current_
 
 @api_router.post("/outfit/wear")
 async def wear_outfit(data: WearOutfitRequest, user: dict = Depends(get_current_user)):
-    # 1. Track history
-    history_id = f"hist_{uuid.uuid4().hex[:12]}"
-    history = {
-        "history_id": history_id,
-        "user_id": user["user_id"],
-        "outfit_id": data.outfit_id,
-        "worn_date": datetime.now(timezone.utc).isoformat()
-    }
-    await db.outfit_history.insert_one(history)
-    
-    # 2. Increment wear count for items
+    # 1. Fetch outfit to get component IDs and unique key
     outfit = await db.outfits.find_one({"outfit_id": data.outfit_id})
-    if outfit:
-        item_ids = [outfit.get(f) for f in ["top_id", "bottom_id", "shoes_id", "accessory_id"] if outfit.get(f)]
-        if item_ids:
-            # 2. Increment wear count for items
+    if not outfit:
+        raise HTTPException(status_code=404, detail="Outfit not found")
+        
+    outfit_key = outfit.get("outfit_key")
+    if not outfit_key:
+        component_ids = sorted([str(outfit.get(f)) for f in ["top_id", "bottom_id", "shoes_id", "accessory_id"] if outfit.get(f)])
+        outfit_key = "*".join(component_ids)
+
+    # 2. Update/Insert history with wear count
+    timestamp = datetime.now(timezone.utc).isoformat()
+    existing_history = await db.outfit_history.find_one({
+        "user_id": user["user_id"],
+        "outfit_key": outfit_key
+    })
+    
+    if existing_history:
+        await db.outfit_history.update_one(
+            {"_id": existing_history["_id"]},
+            {"$inc": {"wear_count": 1}, "$set": {"worn_date": timestamp, "outfit_id": data.outfit_id}}
+        )
+        history_id = existing_history["history_id"]
+    else:
+        history_id = f"hist_{uuid.uuid4().hex[:12]}"
+        history = {
+            "history_id": history_id,
+            "user_id": user["user_id"],
+            "outfit_id": data.outfit_id,
+            "outfit_key": outfit_key,
+            "wear_count": 1,
+            "worn_date": timestamp
+        }
+        await db.outfit_history.insert_one(history)
+    
+    # 3. Increment wear count for individual wardrobe items (only if they are wardrobe items, not store items)
+    item_ids = [outfit.get(f) for f in ["top_id", "bottom_id", "shoes_id", "accessory_id"] if outfit.get(f)]
+    if item_ids:
+        # Check which IDs are wardrobe items vs store items
+        wardrobe_items = await db.wardrobe_items.find({"item_id": {"$in": item_ids}, "user_id": user["user_id"]}).to_list(None)
+        wardrobe_item_ids = [wi["item_id"] for wi in wardrobe_items]
+        
+        if wardrobe_item_ids:
             await db.wardrobe_items.update_many(
-                {"item_id": {"$in": item_ids}, "user_id": user["user_id"]},
+                {"item_id": {"$in": wardrobe_item_ids}, "user_id": user["user_id"]},
                 {"$inc": {"wear_count": 1}}
             )
-            
-            # 3. User preference learning: track preferred colors and styles
-            items = await db.wardrobe_items.find({"item_id": {"$in": item_ids}}).to_list(None)
-            for item in items:
-                color = item.get("color")
-                style = item.get("style")
-                if color:
-                    await db.users.update_one({"user_id": user["user_id"]}, {"$inc": {f"preferences.colors.{color}": 1}})
-                if style:
-                    await db.users.update_one({"user_id": user["user_id"]}, {"$inc": {f"preferences.styles.{style}": 1}})
+        
+        # 4. User preference learning (using wardrobe items found)
+        for item in wardrobe_items:
+            color = item.get("color")
+            style = item.get("style")
+            if color:
+                await db.users.update_one({"user_id": user["user_id"]}, {"$inc": {f"preferences.colors.{color}": 1}})
+            if style:
+                await db.users.update_one({"user_id": user["user_id"]}, {"$inc": {f"preferences.styles.{style}": 1}})
             
     return {"status": "success", "history_id": history_id}
 
@@ -942,6 +986,17 @@ async def get_saved_outfits(user: dict = Depends(get_current_user)):
         })
     return {"outfits": enriched}
 
+@api_router.delete("/outfit/{outfit_id}")
+async def delete_outfit(outfit_id: str, user: dict = Depends(get_current_user)):
+    print(f"DEBUG: Unsave request for outfit_id: {outfit_id}, user_id: {user['user_id']}")
+    result = await db.outfits.delete_one({"outfit_id": outfit_id, "user_id": user["user_id"]})
+    
+    if result.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Outfit not found or already unsaved")
+    
+    # Optional: also remove from history? No, user only asked to unsave (remove from saved list).
+    return {"status": "unsaved"}
+
 # --- Recommendations ---
 @api_router.get("/recommendations")
 async def get_recommendations(
@@ -950,9 +1005,7 @@ async def get_recommendations(
     platform: Optional[str] = None,
     category: Optional[str] = None
 ):
-    items = await db.wardrobe_items.find({"user_id": user["user_id"]}, {"_id": 0, "image_base64": 0}).to_list(50)
-    if not items:
-        return {"recommendations": []}
+    items = await db.wardrobe_items.find({"user_id": user["user_id"]}, {"_id": 0}).to_list(50)
     # Build user profile from DB
     user_profile = {
         "gender": user.get("gender"),
@@ -969,7 +1022,7 @@ async def get_recommendations(
 # --- Analytics ---
 @api_router.get("/analytics")
 async def get_analytics(user: dict = Depends(get_current_user)):
-    items = await db.wardrobe_items.find({"user_id": user["user_id"]}, {"_id": 0, "image_base64": 0}).to_list(200)
+    items = await db.wardrobe_items.find({"user_id": user["user_id"]}, {"_id": 0}).to_list(200)
     total_items = len(items)
     total_outfits = await db.outfits.count_documents({"user_id": user["user_id"]})
     total_worn = await db.outfit_history.count_documents({"user_id": user["user_id"]})

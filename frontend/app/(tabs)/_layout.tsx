@@ -6,6 +6,7 @@ import { Platform, StyleSheet, View } from 'react-native';
 export default function TabLayout() {
   return (
     <Tabs
+      key="main-tabs"
       screenOptions={{
         headerShown: false,
         tabBarStyle: styles.tabBar,
@@ -59,12 +60,11 @@ const styles = StyleSheet.create({
     backgroundColor: Colors.surface,
     borderTopColor: Colors.border,
     borderTopWidth: 0.5,
-    height: Platform.OS === 'ios' ? 88 : 64,
-    paddingTop: 8,
-    paddingBottom: Platform.OS === 'ios' ? 28 : 8,
+    height: 60,
   },
   tabLabel: {
     fontFamily: 'Lato_400Regular',
     fontSize: 11,
+    textAlign: 'center',
   },
 });

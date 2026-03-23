@@ -14,24 +14,32 @@ export default function AnalyticsScreen() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
 
-  const fetchAnalytics = useCallback(async () => {
+  const fetchAnalytics = useCallback(async (isMounted: { current: boolean }) => {
     try {
-      const data = await apiCall('/outfit/history');
-      const historyItems = data.history || [];
-      const total_worn = historyItems.length || 0;
-      setAnalytics({
-        total_worn,
-        history: historyItems
-      });
+      const data = await apiCall('/analytics');
+      const historyData = await apiCall('/outfit/history');
+      
+      if (isMounted.current) {
+        setAnalytics({
+          ...data,
+          history: historyData.history || []
+        });
+      }
     } catch (e) {
       console.error(e);
     } finally {
-      setLoading(false);
-      setRefreshing(false);
+      if (isMounted.current) {
+        setLoading(false);
+        setRefreshing(false);
+      }
     }
   }, []);
 
-  useFocusEffect(useCallback(() => { setLoading(true); fetchAnalytics(); }, [fetchAnalytics]));
+  useFocusEffect(useCallback(() => { 
+    const isMounted = { current: true };
+    fetchAnalytics(isMounted); 
+    return () => { isMounted.current = false; };
+  }, [fetchAnalytics]));
 
   if (loading) {
     return (
@@ -71,6 +79,57 @@ export default function AnalyticsScreen() {
         </View>
 
         <View style={styles.section}>
+          <Text style={styles.sectionTitle}>Most Worn Item</Text>
+          {analytics?.most_worn ? (
+            <Animated.View entering={FadeInUp.delay(300)} style={styles.itemHighlight}>
+              <View style={styles.highlightIcon}>
+                <Ionicons name="star" size={20} color={Colors.secondary} />
+              </View>
+              <View style={styles.highlightInfo}>
+                <Text style={styles.highlightName}>{analytics.most_worn.name}</Text>
+                <Text style={styles.highlightMeta}>Worn {analytics.most_worn.wear_count} times • {analytics.most_worn.category}</Text>
+              </View>
+              {analytics.most_worn.image_base64 && (
+                <Image 
+                  source={{ uri: `data:image/jpeg;base64,${analytics.most_worn.image_base64}` }} 
+                  style={styles.histThumb} 
+                />
+              )}
+            </Animated.View>
+          ) : (
+            <Text style={styles.emptyText}>No wear data yet</Text>
+          )}
+        </View>
+
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>Category Distribution</Text>
+          <View style={styles.chartCard}>
+            {Object.entries(analytics?.categories || {}).map(([cat, count]: any, idx) => (
+              <View key={cat} style={styles.barRow}>
+                <Text style={styles.barLabel}>{cat}</Text>
+                <View style={styles.barTrack}>
+                  <View style={[styles.barFill, { width: `${(count / analytics.total_items) * 100}%` }]} />
+                </View>
+                <Text style={styles.barCount}>{count}</Text>
+              </View>
+            ))}
+          </View>
+        </View>
+
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>Top Colors</Text>
+          <View style={styles.colorGrid}>
+            {Object.entries(analytics?.colors || {}).sort((a: any, b: any) => b[1] - a[1]).slice(0, 4).map(([color, count]: any) => (
+              <View key={color} style={styles.colorItem}>
+                <View style={[styles.colorCircle, { backgroundColor: getColorHex(color) }]} />
+                <Text style={styles.colorName} numberOfLines={1}>{color}</Text>
+                <Text style={styles.colorCount}>{count}</Text>
+              </View>
+            ))}
+          </View>
+        </View>
+
+        <View style={styles.section}>
           <Text style={styles.sectionTitle}>Recently Worn Outfits</Text>
           {(analytics?.history || []).map((hist: any, idx: number) => (
             <Animated.View key={hist.history_id} entering={FadeInUp.delay(idx * 100)} style={styles.historyCard}>
@@ -105,8 +164,22 @@ function getColorHex(colorName: string): string {
 const styles = StyleSheet.create({
   safe: { flex: 1, backgroundColor: Colors.background },
   centered: { flex: 1, justifyContent: 'center', alignItems: 'center' },
-  header: { paddingHorizontal: Spacing.screenPadding, paddingTop: Spacing.md, paddingBottom: Spacing.sm },
-  headerTitle: { fontFamily: 'PlayfairDisplay_700Bold', fontSize: FontSizes.h1, color: Colors.textPrimary },
+  header: { 
+    height: 60,
+    minHeight: 60,
+    flexShrink: 0,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: Spacing.screenPadding,
+    backgroundColor: Colors.surface,
+  },
+  headerTitle: { 
+    fontFamily: 'PlayfairDisplay_700Bold', 
+    fontSize: FontSizes.h2, 
+    color: Colors.textPrimary,
+    textAlign: 'center',
+  },
   headerSubtitle: { fontFamily: 'Lato_400Regular', fontSize: FontSizes.bodyMd, color: Colors.textSecondary, marginTop: 4 },
   statsRow: { flexDirection: 'row', paddingHorizontal: Spacing.screenPadding, gap: Spacing.sm, marginTop: Spacing.md },
   statCard: {
