@@ -10,7 +10,7 @@ import Animated, { FadeInUp } from 'react-native-reanimated';
 import { apiCall } from '../../utils/api';
 import { Colors, Spacing, FontSizes, Radius, Shadows } from '../../constants/theme';
 
-const CATEGORIES = ['All', 'Tops', 'Bottoms', 'Shoes', 'Accessories'];
+const CATEGORIES = ['All', 'Tops', 'Bottoms', 'Shoes', 'Accessories', 'Dresses'];
 
 export default function WardrobeScreen() {
   const { width: SCREEN_WIDTH } = useWindowDimensions();
@@ -27,11 +27,12 @@ export default function WardrobeScreen() {
   const router = useRouter();
 
   const filterItems = (all_items: any[], query: string, cat: string) => {
-    // Category Mapping (STRICT)
-    const TOPS = ["t-shirt", "shirt", "hoodie", "jacket", "top"];
-    const BOTTOMS = ["jeans", "trousers", "shorts", "pants"];
-    const SHOES = ["shoes", "sneakers", "sandals", "footwear"];
-    const ACCESSORIES = ["accessory", "belt", "bracelet", "watch"];
+    // Category Mapping (STRICT) - Matches server.py constants
+    const TOPS = ["t-shirt", "shirt", "hoodie", "jacket", "top", "blouse", "crop top", "tank top", "sweater"];
+    const BOTTOMS = ["jeans", "trousers", "shorts", "pants", "skirt", "leggings", "joggers"];
+    const SHOES = ["shoes", "sneakers", "sandals", "footwear", "heels", "flats", "boots", "loafers"];
+    const ACCESSORIES = ["accessory", "belt", "bracelet", "watch", "handbag", "backpack", "scarf", "sunglasses", "hat"];
+    const DRESSES = ["dress", "gown", "jumpsuit"];
 
     let filtered = [...all_items];
 
@@ -43,6 +44,7 @@ export default function WardrobeScreen() {
         if (cat_lower === 'bottoms') return BOTTOMS.includes(item_cat);
         if (cat_lower === 'shoes') return SHOES.includes(item_cat);
         if (cat_lower === 'accessories') return ACCESSORIES.includes(item_cat);
+        if (cat_lower === 'dresses') return DRESSES.includes(item_cat);
         return item_cat === cat_lower;
       });
     }

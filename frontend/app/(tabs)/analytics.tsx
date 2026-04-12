@@ -14,31 +14,25 @@ export default function AnalyticsScreen() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
 
-  const fetchAnalytics = useCallback(async (isMounted: { current: boolean }) => {
+  const fetchAnalytics = useCallback(async () => {
     try {
       const data = await apiCall('/analytics');
       const historyData = await apiCall('/outfit/history');
       
-      if (isMounted.current) {
-        setAnalytics({
-          ...data,
-          history: historyData.history || []
-        });
-      }
+      setAnalytics({
+        ...data,
+        history: historyData.history || []
+      });
     } catch (e) {
       console.error(e);
     } finally {
-      if (isMounted.current) {
-        setLoading(false);
-        setRefreshing(false);
-      }
+      setLoading(false);
+      setRefreshing(false);
     }
   }, []);
 
   useFocusEffect(useCallback(() => { 
-    const isMounted = { current: true };
-    fetchAnalytics(isMounted); 
-    return () => { isMounted.current = false; };
+    fetchAnalytics(); 
   }, [fetchAnalytics]));
 
   if (loading) {

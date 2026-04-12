@@ -27,11 +27,11 @@ processor = CLIPProcessor.from_pretrained("patrickjohncyh/fashion-clip")
 model.eval()
 
 # Constants
-TOPS = ["t-shirt", "shirt", "hoodie", "jacket", "top"]
-BOTTOMS = ["jeans", "trousers", "shorts", "pants"]
-SHOES = ["shoes", "sneakers", "sandals", "footwear"]
-ACCESSORIES = ["accessory", "belt", "bracelet", "watch"]
-DRESSES = ["dress"]
+TOPS = ["t-shirt", "shirt", "hoodie", "jacket", "top", "blouse", "crop top", "tank top", "sweater"]
+BOTTOMS = ["jeans", "trousers", "shorts", "pants", "skirt", "leggings", "joggers"]
+SHOES = ["shoes", "sneakers", "sandals", "footwear", "heels", "flats", "boots", "loafers"]
+ACCESSORIES = ["accessory", "belt", "bracelet", "watch", "handbag", "backpack", "scarf", "sunglasses", "hat"]
+DRESSES = ["dress", "gown", "jumpsuit"]
 
 CATEGORIES = TOPS + BOTTOMS + SHOES + ACCESSORIES + DRESSES
 STYLES = ["casual", "formal", "sporty", "streetwear", "party wear", "ethnic"]

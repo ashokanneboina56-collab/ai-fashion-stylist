@@ -1,12 +1,12 @@
+import React from 'react';
 import { Tabs } from 'expo-router';
 import { Ionicons, MaterialCommunityIcons, Feather } from '@expo/vector-icons';
 import { Colors } from '../../constants/theme';
-import { Platform, StyleSheet, View } from 'react-native';
+import { StyleSheet } from 'react-native';
 
 export default function TabLayout() {
   return (
     <Tabs
-      key="main-tabs"
       screenOptions={{
         headerShown: false,
         tabBarStyle: styles.tabBar,

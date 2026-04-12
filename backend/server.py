@@ -63,9 +63,9 @@ COLOR_COMPATIBILITY = {
 }
 
 OCCASIONS = {
-    "formal": {"tops": ["shirt"], "bottoms": ["trousers"], "shoes": ["shoes"], "styles": ["formal"]},
-    "casual": {"tops": ["t-shirt", "hoodie"], "bottoms": ["jeans", "shorts"], "shoes": ["sneakers", "sandals"], "styles": ["casual", "streetwear"]},
-    "sporty": {"tops": ["t-shirt", "hoodie"], "bottoms": ["shorts", "trousers"], "shoes": ["sneakers"], "styles": ["sporty"]},
+    "formal": {"tops": ["shirt", "blouse"], "bottoms": ["trousers", "skirt"], "shoes": ["shoes", "heels", "flats", "loafers"], "styles": ["formal"]},
+    "casual": {"tops": ["t-shirt", "hoodie", "top", "crop top", "tank top", "sweater"], "bottoms": ["jeans", "shorts", "pants", "leggings", "joggers"], "shoes": ["sneakers", "sandals", "boots"], "styles": ["casual", "streetwear"]},
+    "sporty": {"tops": ["t-shirt", "hoodie", "tank top"], "bottoms": ["shorts", "trousers", "joggers", "leggings"], "shoes": ["sneakers"], "styles": ["sporty"]},
 }
 
 # MongoDB connection
@@ -286,8 +286,18 @@ async def analyze_clothing_image(image_base64: str) -> dict:
         
         results = {}
         # 1. First check if it's a clothing item at all (Whitelist approach)
-        clothing_labels = ["a piece of clothing", "a fashion accessory", "a pair of shoes"]
-        other_labels = ["a random object", "furniture", "electronics", "food", "an animal", "a person", "a car", "a building", "a landscape"]
+        clothing_labels = [
+            "a piece of clothing", "a fashion accessory", "a pair of shoes", 
+            "a dress", "a suit", "a shirt", "a t-shirt", "pants", "jeans", 
+            "a jacket", "a coat", "a sweater", "a hoodie", "a skirt", 
+            "shorts", "a handbag", "a backpack", "a belt", "a hat", 
+            "sunglasses", "a watch", "jewelry", "a scarf", "gloves"
+        ]
+        other_labels = [
+            "a random object", "furniture", "electronics", "food", 
+            "an animal", "a person without clothes", "a car", "a building", 
+            "a landscape", "a document", "a screen", "a plant"
+        ]
         all_check_labels = clothing_labels + other_labels
         
         with torch.no_grad():
@@ -740,7 +750,20 @@ async def get_profile(user: dict = Depends(get_current_user)):
 async def get_wardrobe(user: dict = Depends(get_current_user), category: Optional[str] = None, search: Optional[str] = None, sort: Optional[str] = None):
     query = {"user_id": user["user_id"]}
     if category and category != "All":
-        query["category"] = category
+        cat_lower = category.lower()
+        if cat_lower == "tops":
+            query["category"] = {"$in": TOPS}
+        elif cat_lower == "bottoms":
+            query["category"] = {"$in": BOTTOMS}
+        elif cat_lower == "shoes":
+            query["category"] = {"$in": SHOES}
+        elif cat_lower == "accessories":
+            query["category"] = {"$in": ACCESSORIES}
+        elif cat_lower == "dresses":
+            query["category"] = {"$in": DRESSES}
+        else:
+            query["category"] = category
+            
     if search:
         query["name"] = {"$regex": search, "$options": "i"}
     sort_field = "created_at"
@@ -773,7 +796,7 @@ async def add_wardrobe_item(data: WardrobeItemCreate, user: dict = Depends(get_c
         "user_id": user["user_id"],
         "image_base64": processed_image_b64,
         "name": data.name or attributes.get("name", "Clothing Item"),
-        "category": attributes.get("category", "Tops"),
+        "category": attributes.get("category", "top"),
         "color": attributes.get("color", "Unknown"),
         "texture": attributes.get("texture", "Unknown"),
         "style": attributes.get("style", "Casual"),
@@ -811,7 +834,7 @@ async def batch_add_wardrobe_items(data: WardrobeBatchAdd, user: dict = Depends(
                 "user_id": user["user_id"],
                 "image_base64": processed_image_b64,
                 "name": item_data.name or attributes.get("name", "Clothing Item"),
-                "category": attributes.get("category", "Tops"),
+                "category": attributes.get("category", "top"),
                 "color": attributes.get("color", "Unknown"),
                 "texture": attributes.get("texture", "Unknown"),
                 "style": attributes.get("style", "Casual"),

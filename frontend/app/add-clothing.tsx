@@ -24,35 +24,45 @@ export default function AddClothingScreen() {
   const router = useRouter();
 
   const pickImage = async (useCamera: boolean) => {
-    const permission = useCamera
-      ? await ImagePicker.requestCameraPermissionsAsync()
-      : await ImagePicker.requestMediaLibraryPermissionsAsync();
+    try {
+      const permission = useCamera
+        ? await ImagePicker.requestCameraPermissionsAsync()
+        : await ImagePicker.requestMediaLibraryPermissionsAsync();
 
-    if (!permission.granted) {
-      Alert.alert('Permission Required', 'Please grant camera/gallery access to add clothing items.');
-      return;
-    }
-
-    const pickerFn = useCamera
-      ? ImagePicker.launchCameraAsync
-      : ImagePicker.launchImageLibraryAsync;
-
-    const res = await pickerFn({
-      mediaTypes: ['images'],
-      allowsEditing: !isBatchMode, // Disable editing for multi-select
-      allowsMultipleSelection: isBatchMode,
-      quality: 0.8,
-      base64: true,
-    });
-
-    if (!res.canceled && res.assets) {
-      if (isBatchMode) {
-        const newImages = res.assets.map(a => a.base64).filter(Boolean) as string[];
-        setBatchImages(prev => [...prev, ...newImages]);
-      } else if (res.assets[0]?.base64) {
-        setImage(res.assets[0].base64);
-        setResult(null);
+      if (!permission.granted) {
+        Alert.alert('Permission Required', 'Please grant camera/gallery access to add clothing items.');
+        return;
       }
+
+      const options: ImagePicker.ImagePickerOptions = {
+        mediaTypes: ImagePicker.MediaTypeOptions.Images,
+        allowsEditing: !useCamera && !isBatchMode, // Strictly disable editing for camera to prevent Android 'back' bug
+        allowsMultipleSelection: isBatchMode && !useCamera,
+        quality: 0.6, // Lower quality further to minimize memory footprint
+        base64: true,
+      };
+
+      // Small delay to ensure any UI ripples or transitions finish before opening system activity
+      await new Promise(resolve => setTimeout(resolve, 100));
+
+      const res = useCamera 
+        ? await ImagePicker.launchCameraAsync(options)
+        : await ImagePicker.launchImageLibraryAsync(options);
+
+      if (!res.canceled && res.assets && res.assets.length > 0) {
+        if (isBatchMode) {
+          const newImages = res.assets.map(a => a.base64).filter(Boolean) as string[];
+          setBatchImages(prev => [...prev, ...newImages]);
+        } else if (res.assets[0]?.base64) {
+          setImage(res.assets[0].base64);
+          setResult(null);
+        }
+      }
+    } catch (error) {
+      console.error('Camera Error:', error);
+      // More descriptive error for debugging
+      const errorMsg = error instanceof Error ? error.message : 'Unknown camera error';
+      Alert.alert('Camera Error', `Could not open ${useCamera ? 'camera' : 'gallery'}. Please try again.`);
     }
   };
 

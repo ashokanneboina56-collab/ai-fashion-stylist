@@ -14,7 +14,7 @@ const BASE_URL = process.env.EXPO_PUBLIC_BACKEND_URL;
 
 const PRICE_FILTERS = ['All', 'Under ₹500', '₹500-₹1000', '₹1000-₹2000', '₹2000-₹5000', 'Above ₹5000'];
 const PLATFORM_FILTERS = ['All', 'Amazon', 'Myntra', 'Flipkart'];
-const CATEGORY_FILTERS = ['All', 'Tops', 'Bottoms', 'Shoes', 'Accessories'];
+const CATEGORY_FILTERS = ['All', 'Tops', 'Bottoms', 'Shoes', 'Accessories', 'Dresses'];
 
 function getStoreColor(store: string): string {
   const colors: Record<string, string> = {
