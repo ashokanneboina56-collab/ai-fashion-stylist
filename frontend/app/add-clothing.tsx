@@ -64,9 +64,27 @@ export default function AddClothingScreen() {
         method: 'POST',
         body: JSON.stringify({ image_base64: image }),
       });
+      
+      console.log('DEBUG: Backend Response:', data);
+
+      if (data.is_clothing === false) {
+        if (Platform.OS === 'web') {
+          alert('Not a clothing item or fashion accessory.');
+        } else {
+          Alert.alert('Alert', 'This is not a clothing item or fashion accessory.');
+        }
+        setImage(null);
+        setUploading(false);
+        return;
+      }
+
       setResult(data);
     } catch (e: any) {
-      Alert.alert('Error', e.message || 'Failed to process image');
+      if (Platform.OS === 'web') {
+        alert(e.message || 'Failed to process image');
+      } else {
+        Alert.alert('Error', e.message || 'Failed to process image');
+      }
     } finally {
       setUploading(false);
     }
@@ -82,13 +100,29 @@ export default function AddClothingScreen() {
           items: batchImages.map(img => ({ image_base64: img }))
         }),
       });
-      Alert.alert('Success', `Successfully uploaded ${data.items?.length || 0} items`, [
-        { text: 'View Wardrobe', onPress: () => router.back() },
-        { text: 'OK', onPress: () => setBatchImages([]) }
-      ]);
+      
+      let message = `Successfully uploaded ${data.items?.length || 0} items.`;
+      if (data.skipped_count > 0) {
+         message += `\n\n${data.skipped_count} items were skipped because they were not identified as clothing.`;
+       }
+ 
+       if (Platform.OS === 'web') {
+         alert(message);
+         if (data.items?.length > 0) router.back();
+         else setBatchImages([]);
+       } else {
+         Alert.alert('Success', message, [
+           { text: 'View Wardrobe', onPress: () => router.back() },
+           { text: 'OK', onPress: () => setBatchImages([]) }
+         ]);
+       }
     } catch (e: any) {
-      Alert.alert('Error', e.message || 'Failed to process batch upload');
-    } finally {
+        if (Platform.OS === 'web') {
+          alert(e.message || 'Failed to process batch upload');
+        } else {
+          Alert.alert('Error', e.message || 'Failed to process batch upload');
+        }
+      } finally {
       setUploading(false);
     }
   };

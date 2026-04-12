@@ -21,6 +21,7 @@ from transformers import CLIPModel, CLIPProcessor
 import numpy as np
 from sklearn.cluster import KMeans
 import requests
+import random
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -40,13 +41,14 @@ def warmup():
 warmup()
 
 # --- Fashion Constants ---
-TOPS = ["t-shirt", "shirt", "hoodie", "jacket", "top"]
-BOTTOMS = ["jeans", "trousers", "shorts", "pants"]
-SHOES = ["shoes", "sneakers", "sandals", "footwear"]
-ACCESSORIES = ["accessory", "belt", "bracelet", "watch"]
-DRESSES = ["dress"]
+TOPS = ["t-shirt", "shirt", "hoodie", "jacket", "top", "blouse", "crop top", "tank top", "sweater"]
+BOTTOMS = ["jeans", "trousers", "shorts", "pants", "skirt", "leggings", "joggers"]
+SHOES = ["shoes", "sneakers", "sandals", "footwear", "heels", "flats", "boots", "loafers"]
+ACCESSORIES = ["accessory", "belt", "bracelet", "watch", "handbag", "scarf", "sunglasses", "hat"]
+DRESSES = ["dress", "gown", "jumpsuit"]
 
 CATEGORIES = TOPS + BOTTOMS + SHOES + ACCESSORIES + DRESSES
+
 COLORS = ["red", "blue", "black", "white", "green", "yellow", "grey", "brown", "pink", "multi-color"]
 STYLES = ["casual", "formal", "sporty", "streetwear", "party wear", "ethnic"]
 PATTERNS = ["plain", "striped", "checked", "floral", "printed"]
@@ -70,6 +72,22 @@ OCCASIONS = {
 mongo_url = os.environ['MONGO_URL']
 client = AsyncIOMotorClient(mongo_url)
 db = client[os.environ['DB_NAME']]
+
+def get_store_collection(gender: str):
+    """Returns the appropriate store collection based on user gender."""
+    print(f"DEBUG: [get_store_collection] gender provided: '{gender}'")
+    
+    if gender:
+        g_clean = str(gender).strip().lower()
+        if g_clean == "female":
+            print("DEBUG: [get_store_collection] Returning female_store_items")
+            return db.female_store_items
+        elif g_clean == "male":
+            print("DEBUG: [get_store_collection] Returning male store_items")
+            return db.store_items
+            
+    print(f"DEBUG: [get_store_collection] Defaulting to male store_items for gender: '{gender}'")
+    return db.store_items
 
 JWT_SECRET = os.environ.get('JWT_SECRET')
 JWT_ALGORITHM = "HS256"
@@ -267,7 +285,24 @@ async def analyze_clothing_image(image_base64: str) -> dict:
             image = image.convert('RGB')
         
         results = {}
-        # Zero-shot CLIP for attributes
+        # 1. First check if it's a clothing item at all (Whitelist approach)
+        clothing_labels = ["a piece of clothing", "a fashion accessory", "a pair of shoes"]
+        other_labels = ["a random object", "furniture", "electronics", "food", "an animal", "a person", "a car", "a building", "a landscape"]
+        all_check_labels = clothing_labels + other_labels
+        
+        with torch.no_grad():
+            inputs = processor(text=all_check_labels, images=image, return_tensors="pt", padding=True).to(device)
+            outputs = model(**inputs)
+            probs = outputs.logits_per_image.softmax(dim=1)
+            best_idx = probs.argmax().item()
+            best_label = all_check_labels[best_idx]
+            
+        print(f"DEBUG: Clothing Detection: {best_label}")
+        if best_label not in clothing_labels:
+            logger.info(f"Rejected non-clothing item detected")
+            return {"is_clothing": False, "error": "Not a clothing item"}
+
+        # 2. Zero-shot CLIP for specific attributes if it IS clothing
         for label_set, key in [(CATEGORIES, "category"), (STYLES, "style"), (PATTERNS, "pattern")]:
             prompts = [f"a photo of a {label} clothing" for label in label_set]
             with torch.no_grad():
@@ -277,6 +312,7 @@ async def analyze_clothing_image(image_base64: str) -> dict:
                 best_idx = probs.argmax().item()
                 results[key] = label_set[best_idx]
         
+        results["is_clothing"] = True
         # Category validation safety
         if results.get("category") not in CATEGORIES:
             results["category"] = "t-shirt"
@@ -435,24 +471,31 @@ async def generate_recommendations(wardrobe_items: list, user_profile: dict = No
         # Fetch items from fake store
         store_query = {}
         
-        # Category Mapping (STRICT)
-        TOPS = ["t-shirt", "shirt", "hoodie", "jacket"]
-        BOTTOMS = ["jeans", "trousers", "shorts"]
-        SHOES = ["shoes", "sneakers", "sandals"]
-        ACCESSORIES = ["accessory", "belt", "bracelet", "watch"]
-
-        if category and category != "All":
+        # Build category lists for filtering
+        # These are used to group items from the database
+        # TOPS, BOTTOMS, SHOES, ACCESSORIES, DRESSES are already global
+        
+        # Choose collection based on gender
+        gender = user_profile.get("gender") if user_profile else None
+        store_collection = get_store_collection(gender)
+        
+        # 1. Determine target category group based on filter or random choice
+        if category and category.lower() != "all":
             cat_lower = category.lower()
             if cat_lower == "tops":
-                store_query["category"] = {"$in": TOPS}
+                target_cats = TOPS
             elif cat_lower == "bottoms":
-                store_query["category"] = {"$in": BOTTOMS}
+                target_cats = BOTTOMS
             elif cat_lower == "shoes":
-                store_query["category"] = {"$in": SHOES}
+                target_cats = SHOES
             elif cat_lower == "accessories":
-                store_query["category"] = {"$in": ACCESSORIES}
+                target_cats = ACCESSORIES
+            elif cat_lower == "dresses":
+                target_cats = DRESSES
             else:
-                store_query["category"] = cat_lower
+                target_cats = [cat_lower]
+            store_query["category"] = {"$in": target_cats}
+        # If category is None or "All", we show all items from the collection by default
         
         # Add basic platform filtering if provided
         if platform and platform != "All":
@@ -470,7 +513,10 @@ async def generate_recommendations(wardrobe_items: list, user_profile: dict = No
             elif "Above" in price_range:
                 store_query["price"] = {"$gt": int(price_range.split("₹")[1])}
         
-        store_items = await db.store_items.find(store_query, {"_id": 0}).to_list(100)
+        print(f"DEBUG: [generate_recommendations] Query: {store_query} on {store_collection.name}")
+        # Increase limit to 500 to show more items when "All" is selected
+        store_items = await store_collection.find(store_query, {"_id": 0}).to_list(500)
+        print(f"DEBUG: [generate_recommendations] Found {len(store_items)} items")
         if not store_items: return []
         
         # 2. Get user reference embeddings (avg of wardrobe items)
@@ -515,7 +561,8 @@ async def generate_recommendations(wardrobe_items: list, user_profile: dict = No
             })
             
         recommendations.sort(key=lambda x: x["match_score"], reverse=True)
-        return recommendations[:50] # Show more items in the grid
+        # Show more items in the grid, up to 200
+        return recommendations[:200]
     except Exception as e:
         logger.error(f"Recommendation error: {e}")
         return []
@@ -712,6 +759,9 @@ async def add_wardrobe_item(data: WardrobeItemCreate, user: dict = Depends(get_c
     processed_image_b64 = process_image(data.image_base64)
     attributes = await analyze_clothing_image(processed_image_b64)
     
+    if attributes.get("is_clothing") is False:
+        return {"is_clothing": False, "error": "Not a clothing item"}
+    
     # Generate embedding
     image_data = base64.b64decode(processed_image_b64)
     image = Image.open(io.BytesIO(image_data)).convert('RGB')
@@ -740,11 +790,17 @@ async def add_wardrobe_item(data: WardrobeItemCreate, user: dict = Depends(get_c
 @api_router.post("/wardrobe/batch-add")
 async def batch_add_wardrobe_items(data: WardrobeBatchAdd, user: dict = Depends(get_current_user)):
     results = []
+    skipped_count = 0
     for item_data in data.items:
         try:
             processed_image_b64 = process_image(item_data.image_base64)
             attributes = await analyze_clothing_image(processed_image_b64)
             
+            if attributes.get("is_clothing") is False:
+                logger.info(f"Skipping non-clothing item in batch add: {item_data.name}")
+                skipped_count += 1
+                continue
+
             image_data = base64.b64decode(processed_image_b64)
             image = Image.open(io.BytesIO(image_data)).convert('RGB')
             embedding = get_image_embedding(image).cpu().numpy().tolist()[0]
@@ -770,8 +826,9 @@ async def batch_add_wardrobe_items(data: WardrobeBatchAdd, user: dict = Depends(
             results.append(item)
         except Exception as e:
             logger.error(f"Batch add error for item: {e}")
+            skipped_count += 1
             continue
-    return {"items": results}
+    return {"items": results, "skipped_count": skipped_count}
 
 @api_router.get("/wardrobe/{item_id}")
 async def get_wardrobe_item(item_id: str, user: dict = Depends(get_current_user)):
@@ -809,7 +866,13 @@ async def predict_outfit(data: OutfitPredictRequest, user: dict = Depends(get_cu
     
     # Strictly choose source
     if data.source == "store":
-        all_items = await db.store_items.find({"category": {"$in": CATEGORIES}}, {"_id": 0}).to_list(100)
+        user_gender = user.get("gender")
+        print(f"DEBUG: Prediction user gender: {user_gender}")
+        store_collection = get_store_collection(user_gender)
+        
+        # Build query (removed redundant gender filter)
+        store_query = {"category": {"$in": CATEGORIES}}
+        all_items = await store_collection.find(store_query, {"_id": 0}).to_list(200)
         # map field name for consistency in matching logic
         for s in all_items:
             s["item_id"] = s["product_id"]
@@ -945,8 +1008,9 @@ async def get_outfit_history(user: dict = Depends(get_current_user)):
     # Pre-fetch items to avoid repeated DB calls
     wardrobe_items = await db.wardrobe_items.find({"user_id": user["user_id"]}, {"_id": 0}).to_list(200)
     store_items = await db.store_items.find({}, {"_id": 0}).to_list(200)
+    female_store_items = await db.female_store_items.find({}, {"_id": 0}).to_list(200)
     
-    items_map = {i.get("item_id") or i.get("product_id"): i for i in wardrobe_items + store_items}
+    items_map = {i.get("item_id") or i.get("product_id"): i for i in wardrobe_items + store_items + female_store_items}
     
     enriched_history = []
     for h in history:
@@ -969,8 +1033,9 @@ async def get_saved_outfits(user: dict = Depends(get_current_user)):
     # Pre-fetch items to avoid repeated DB calls
     wardrobe_items = await db.wardrobe_items.find({"user_id": user["user_id"]}, {"_id": 0}).to_list(200)
     store_items = await db.store_items.find({}, {"_id": 0}).to_list(200)
+    female_store_items = await db.female_store_items.find({}, {"_id": 0}).to_list(200)
     
-    items_map = {i.get("item_id") or i.get("product_id"): i for i in wardrobe_items + store_items}
+    items_map = {i.get("item_id") or i.get("product_id"): i for i in wardrobe_items + store_items + female_store_items}
     
     enriched = []
     for o in outfits:
@@ -1005,6 +1070,7 @@ async def get_recommendations(
     platform: Optional[str] = None,
     category: Optional[str] = None
 ):
+    print(f"DEBUG: [get_recommendations] User email: {user.get('email')}, gender: {user.get('gender')}")
     items = await db.wardrobe_items.find({"user_id": user["user_id"]}, {"_id": 0}).to_list(50)
     # Build user profile from DB
     user_profile = {
@@ -1059,6 +1125,7 @@ app.include_router(api_router)
 
 # Mount dataset images
 app.mount("/images", StaticFiles(directory="dataset"), name="images")
+app.mount("/images2", StaticFiles(directory="dataset2"), name="images2")
 
 app.add_middleware(
     CORSMiddleware,

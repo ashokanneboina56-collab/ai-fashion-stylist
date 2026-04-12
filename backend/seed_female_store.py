@@ -27,21 +27,23 @@ processor = CLIPProcessor.from_pretrained("patrickjohncyh/fashion-clip")
 model.eval()
 
 # Constants
-TOPS = ["t-shirt", "shirt", "hoodie", "jacket", "top"]
-BOTTOMS = ["jeans", "trousers", "shorts", "pants"]
-SHOES = ["shoes", "sneakers", "sandals", "footwear"]
-ACCESSORIES = ["accessory", "belt", "bracelet", "watch"]
-DRESSES = ["dress"]
+TOPS = ["t-shirt", "shirt", "hoodie", "jacket", "top", "blouse", "crop top"]
+BOTTOMS = ["jeans", "trousers", "shorts", "pants", "skirt", "leggings"]
+SHOES = ["shoes", "sneakers", "sandals", "footwear", "heels", "flats", "boots"]
+ACCESSORIES = ["accessory", "belt", "bracelet", "watch", "handbag", "scarf"]
+DRESSES = ["dress", "gown"]
 
 CATEGORIES = TOPS + BOTTOMS + SHOES + ACCESSORIES + DRESSES
 STYLES = ["casual", "formal", "sporty", "streetwear", "party wear", "ethnic"]
 PATTERNS = ["plain", "striped", "checked", "floral", "printed"]
 
 CATEGORY_MAP = {
-    "shirts": "shirt",
-    "pants": "trousers",
+    "tops": "shirt",
+    "bottoms": "trousers",
     "shoes": "shoes",
-    "accessories": "accessory"
+    "accessories": "accessory",
+    "dresses": "dress",
+    "outerwear": "jacket"
 }
 
 # --- AI Helpers (Mirrored from server.py) ---
@@ -129,7 +131,7 @@ def get_image_embedding(image):
     return emb
 
 def load_dataset_images():
-    dataset_path = ROOT_DIR / "dataset"
+    dataset_path = ROOT_DIR / "dataset2"
     if not dataset_path.exists():
         print(f"Error: Dataset path {dataset_path} does not exist.")
         return []
@@ -173,15 +175,15 @@ async def seed_db():
     
     print(f"Connecting to {DB_NAME}...")
     
-    # Clear existing store items
-    await db.store_items.delete_many({})
+    # Clear existing female store items
+    await db.female_store_items.delete_many({})
     
     dataset_images = load_dataset_images()
     if not dataset_images:
-        print("No images found in dataset. Seeding aborted.")
+        print("No images found in dataset2. Seeding aborted.")
         return
 
-    print(f"Processing {len(dataset_images)} images from dataset...")
+    print(f"Processing {len(dataset_images)} images from dataset2...")
     
     items = []
     for img, base_cat, subcat, img_path in dataset_images:
@@ -199,8 +201,6 @@ async def seed_db():
             category = "trousers" # Fallback
         elif base_cat == "shoes" and predicted_cat not in SHOES:
             category = "shoes" # Fallback
-        elif base_cat == "accessory" and predicted_cat not in ACCESSORIES:
-            category = "accessory" # Fallback
         else:
             category = predicted_cat
 
@@ -215,18 +215,18 @@ async def seed_db():
         path_obj = Path(img_path)
         parts = path_obj.parts
         try:
-            dataset_idx = parts.index("dataset")
+            dataset_idx = parts.index("dataset2")
             relative_path = "/".join(parts[dataset_idx+1:])
         except ValueError:
             relative_path = os.path.basename(img_path)
             
-        image_url = f"/images/{relative_path}"
+        image_url = f"/images2/{relative_path}"
         
         # Randomly assign a store name for variety
-        store_name = random.choice(["Amazon", "Flipkart", "Myntra"])
+        store_name = random.choice(["Amazon", "Flipkart", "Myntra", "Zara", "H&M"])
         
         item = {
-            "product_id": f"prod_{uuid.uuid4().hex[:12]}",
+            "product_id": f"prod_fem_{uuid.uuid4().hex[:12]}",
             "name": f"{color.capitalize()} {category.capitalize()}" + (f" ({subcat})" if subcat else ""),
             "category": category,
             "subcategory": subcat,
@@ -237,13 +237,13 @@ async def seed_db():
             "embedding": embedding,
             "image_url": image_url,
             "store": store_name,
-            "gender": "male"
+            "gender": "female"
         }
         items.append(item)
         
     if items:
-        await db.store_items.insert_many(items)
-        print(f"Successfully seeded {len(items)} items into store_items collection.")
+        await db.female_store_items.insert_many(items)
+        print(f"Successfully seeded {len(items)} items into female_store_items collection.")
     
     client.close()
 

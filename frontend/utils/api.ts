@@ -18,8 +18,10 @@ export async function apiCall(endpoint: string, options: RequestInit = {}) {
   });
 
   if (!response.ok) {
-    const error = await response.json().catch(() => ({ detail: 'Request failed' }));
-    throw new Error(error.detail || 'Request failed');
+    const errorData = await response.json().catch(() => ({ detail: 'Request failed' }));
+    // FastAPI typically returns errors in { detail: "message" } format
+    const errorMessage = errorData.detail || errorData.message || 'Request failed';
+    throw new Error(errorMessage);
   }
 
   return response.json();

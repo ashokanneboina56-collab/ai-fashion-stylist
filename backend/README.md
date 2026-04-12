@@ -68,14 +68,19 @@ venv\Scripts\activate (Windows)
 source venv/bin/activate (Linux/Mac)
 ```
 
-### 3. Run seed script
+### 3. Run seed script (Male Store)
 ```bash
 python seed_store_db.py
 ```
 
-### 4. Expected Output
+### 4. Run seed script (Female Store)
+```bash
+python seed_female_store.py
+```
+
+### 5. Expected Output
 If successful, you will see:
-`Successfully seeded X items into store_items collection`
+`Successfully seeded X items into store_items collection` (or `female_store_items`)
 
 ### ℹ️ Important Notes
 - **Dataset Location:** Images are loaded from the `backend/dataset/` directory.
